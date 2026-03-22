@@ -1,0 +1,31 @@
+# sbt
+target/
+project/project
+project/target
+*.log
+
+# IDEA
+.idea/
+*.iml
+*.iws
+.idea_modules/
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# Scala
+*.class
+*.jar
+/*.scala-*/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Vim
+*.swp
+*.swo
+*~
