@@ -1,5 +1,3 @@
-// See README.md for license details.
-
 ThisBuild / scalaVersion     := "2.13.12"
 ThisBuild / version          := "0.1.0"
 ThisBuild / organization     := "com.github.ethanhau"
@@ -8,10 +6,11 @@ val chiselVersion = "6.2.0"
 
 lazy val root = (project in file("."))
   .settings(
-    name := "hardware-design",
+    name := "HardwareDesign",
     libraryDependencies ++= Seq(
       "org.chipsalliance" %% "chisel" % chiselVersion,
       "org.scalatest" %% "scalatest" % "3.2.16" % "test",
+      "edu.berkeley.cs" %% "chiseltest" % "0.6.0" % Test,
     ),
     scalacOptions ++= Seq(
       "-language:reflectiveCalls",
