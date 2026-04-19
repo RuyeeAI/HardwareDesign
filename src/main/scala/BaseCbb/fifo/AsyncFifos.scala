@@ -1,4 +1,4 @@
-package cbb.fifo
+package BaseCbb.fifo
 
 import chisel3._
 import chisel3.util._

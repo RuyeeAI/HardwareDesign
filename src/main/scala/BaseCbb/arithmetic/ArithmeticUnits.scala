@@ -1,8 +1,8 @@
-package cbb.arithmetic
+package BaseCbb.arithmetic
 
 import chisel3._
 import chisel3.util._
-import cbb.basic.FullAdd
+import BaseCbb.basic.FullAdd
 
 // N位逐位进位加法器 (N-bit Ripple Carry Adder)
 class RippleCarryAdder(width: Int = 32) extends Module {
