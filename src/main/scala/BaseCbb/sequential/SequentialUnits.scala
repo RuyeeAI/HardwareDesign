@@ -94,7 +94,7 @@ class UpCounter(width: Int = 8) extends Module {
     val cnt = Reg(UInt(width.W))
     io.carry := cnt.andR & io.en
 
-    when (!rst_n || io.clear) {
+    when (!io.rst_n.asBool || io.clear) {
       cnt := 0.U
     } .elsewhen (io.en) {
       cnt := cnt + 1.U
@@ -118,7 +118,7 @@ class ModNCounter(mod: Int = 100) extends Module {
     val cnt = Reg(UInt(width.W))
     io.overflow := (cnt === (mod - 1).U) && io.en
 
-    when (!rst_n) {
+    when (!io.rst_n.asBool) {
       cnt := 0.U
     } .elsewhen (io.en) {
       when (io.overflow) {
@@ -176,8 +176,8 @@ class ClkDivOdd(div: Int = 3) extends Module {
   }
 
   // Negative edge counter
-  withClock((~io.clkIn).asClock) {
-    when (!io.rst_n) {
+  withClock((~io.clkIn.asUInt)(0).asClock) {
+    when (!io.rst_n.asBool) {
       cntN := 0.U
       clkN := false.B
     } .elsewhen (cntN === (div - 1).U) {
@@ -248,7 +248,7 @@ class SyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
 
   // Write
   withClockAndReset(io.clk, io.rst_n) {
-    when (!rst_n) {
+    when (!io.rst_n.asBool) {
       wrPtr := 0.U
     } .elsewhen (io.wrEn && !io.full) {
       mem.write(wrPtr, io.din)
@@ -258,7 +258,7 @@ class SyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
 
   // Read
   withClockAndReset(io.clk, io.rst_n) {
-    when (!rst_n) {
+    when (!io.rst_n.asBool) {
       rdPtr := 0.U
       io.dout := 0.U
     } .elsewhen (io.rdEn && !io.empty) {
@@ -269,7 +269,7 @@ class SyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
 
   // Count
   withClockAndReset(io.clk, io.rst_n) {
-    when (!rst_n) {
+    when (!io.rst_n.asBool) {
       count := 0.U
     } .otherwise {
       switch (Cat(io.wrEn && !io.full, io.rdEn && !io.empty)) {

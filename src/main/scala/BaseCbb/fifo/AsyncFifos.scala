@@ -29,9 +29,9 @@ class AsyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
   // Helper: Gray to binary conversion
   def grayToBinary(gray: UInt, width: Int): UInt = {
     val binary = Wire(Vec(width, Bool()))
-    binary(width - 1) = gray(width - 1)
+    binary(width - 1) := gray(width - 1)
     for (i <- (width - 2) to 0 by -1) {
-      binary(i) = gray(i) ^ binary(i + 1)
+      binary(i) := gray(i) ^ binary(i + 1)
     }
     binary.asUInt
   }
@@ -119,9 +119,9 @@ class AsyncZeroLatencyFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Modu
   // Helper: Gray to binary conversion
   def grayToBinary(gray: UInt, width: Int): UInt = {
     val binary = Wire(Vec(width, Bool()))
-    binary(width - 1) = gray(width - 1)
+    binary(width - 1) := gray(width - 1)
     for (i <- (width - 2) to 0 by -1) {
-      binary(i) = gray(i) ^ binary(i + 1)
+      binary(i) := gray(i) ^ binary(i + 1)
     }
     binary.asUInt
   }

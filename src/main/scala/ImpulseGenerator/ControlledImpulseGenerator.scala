@@ -23,7 +23,7 @@ class ControlledImpulseGenerator extends Module {
   val io = IO(new Bundle {
     val start  = Input(Bool())
     val length = Input(UInt(4.W))
-    val width  = Input(UInt(2.W))
+    val pulseWidth = Input(UInt(2.W))
     val out    = Output(Bool())
   })
 
@@ -32,7 +32,7 @@ class ControlledImpulseGenerator extends Module {
   val state = RegInit(sIdle)
 
   // 计算实际脉冲宽度和间隔（脉冲之间间隔等于宽度）
-  val actualWidth = io.width + 1.U
+  val actualWidth = io.pulseWidth + 1.U
   // 脉冲计数器，记录已经输出了多少个脉冲
   val pulseCount = Reg(UInt(4.W))
   // 周期计数器，记录当前脉冲已经持续了多少个周期
@@ -85,7 +85,7 @@ class ControlledImpulseGenerator extends Module {
   }
 
   // 复位处理
-  when(reset) {
+  when(reset.asBool) {
     state := sIdle
     pulseCount := 0.U
     cycleCount := 0.U

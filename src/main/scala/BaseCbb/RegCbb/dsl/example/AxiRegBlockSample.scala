@@ -37,9 +37,6 @@ class AxiLiteBusIO(addrWidth: Int, dataWidth: Int) extends Bundle {
   val r_ready  = Input(Bool())
   val r_data   = Output(UInt(dataWidth.W))
   val r_resp   = Output(UInt(2.W))
-
-  override def cloneType: AxiLiteBusIO.this.type =
-    new AxiLiteBusIO(addrWidth, dataWidth).asInstanceOf[this.type]
 }
 
 /**
@@ -93,9 +90,6 @@ class AxiBusIO(addrWidth: Int, dataWidth: Int, idWidth: Int = 4) extends Bundle 
   val r_data   = Output(UInt(dataWidth.W))
   val r_resp   = Output(UInt(2.W))
   val r_last   = Output(Bool())
-
-  override def cloneType: AxiBusIO.this.type =
-    new AxiBusIO(addrWidth, dataWidth, idWidth).asInstanceOf[this.type]
 }
 
 /** AXI Burst Type constants */

@@ -8,10 +8,10 @@ import chisel3.util._
 class Sync2(depth: Int = 2) extends Module {
   require(depth >= 2, "synchronizer depth must be >= 2")
   val io = IO(new Bundle {
-    val clk   = Input(Clock())   // 目标时钟域时钟
+    val clk   = Input(Clock())
     val rst_n = Input(AsyncReset())
-    val din   = Input(Bool())    // 异步输入信号
-    val dout  = Output(Bool())   // 同步输出信号
+    val din   = Input(Bool())
+    val dout  = Output(Bool())
   })
 
   withClockAndReset(io.clk, io.rst_n) {
@@ -37,29 +37,27 @@ class PulseSync extends Module {
   })
 
   // 源时钟域：检测脉冲，翻转标志
+  val toggleOut = Wire(Bool())
   withClockAndReset(io.srcClk, io.srcRst_n) {
     val toggle = RegInit(false.B)
     when (io.pulseIn) {
       toggle := ~toggle
     }
-    val toggleSyncStage = toggle
     // 输出到目标域
-    toggleSyncStage <> Wire(Bool())
-    toggleSyncStage := toggle
+    toggleOut := toggle
   }
 
   // 目标时钟域：两级同步，检测边沿产生脉冲
   val toggleSync = Module(new Sync2(2))
   toggleSync.io.clk := io.dstClk
   toggleSync.io.rst_n := io.dstRst_n
-  toggleSync.io.din := toggleSyncStage
+  toggleSync.io.din := toggleOut
 
   val syncPulse = RegNext(toggleSync.io.dout, false.B)
-  io.pulseOut := toggleSync.io.dout ^ syncPulse // 检测边沿产生脉冲
+  io.pulseOut := toggleSync.io.dout ^ syncPulse
 }
 
 // 3. 双边沿检测 (Double Edge Detector)
-// 检测输入信号的上升沿和下降沿，输出脉冲
 class EdgeDetect extends Module {
   val io = IO(new Bundle {
     val din    = Input(Bool())
@@ -74,7 +72,6 @@ class EdgeDetect extends Module {
 }
 
 // 4. 异步复位同步释放 (Asynchronous Reset Synchronous Release)
-// 将外部异步复位同步到本地时钟域，保证复位释放不出现问题
 class AsyncRstSync extends Module {
   val io = IO(new Bundle {
     val clk      = Input(Clock())
@@ -92,14 +89,11 @@ class AsyncRstSync extends Module {
 }
 
 // 5. 经典四位全握手 (4-phase Handshake)
-// 源端 -> 目的端 单次传输握手
 class Handshake[T <: Data](dataType: T) extends Module {
   val io = IO(new Bundle {
-    // Source side
     val srcValid = Input(Bool())
     val srcReady = Output(Bool())
     val srcData  = Input(dataType)
-    // Destination side
     val dstValid = Output(Bool())
     val dstReady = Input(Bool())
     val dstData  = Output(dataType)
@@ -108,12 +102,6 @@ class Handshake[T <: Data](dataType: T) extends Module {
   val regReq = RegInit(false.B)
   val regAck = RegInit(false.B)
   val regData = Reg(dataType)
-
-  // 4-phase handshake:
-  // 1. src raises req (valid) when data ready
-  // 2. dst accepts, raises ack (ready)
-  // 3. src lowers req when ack seen
-  // 4. dst lowers ack after req lowered
 
   when (!regReq && io.srcValid) {
     regReq := true.B
@@ -134,11 +122,9 @@ class Handshake[T <: Data](dataType: T) extends Module {
 }
 
 // 6. 异步FIFO (Asynchronous FIFO)
-// 跨时钟域数据传输，经典的格雷码指针实现
 class AsyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
   val depth = 1 << addrWidth
   val io = IO(new Bundle {
-    // Write clock domain
     val wrClk   = Input(Clock())
     val wrRst_n = Input(AsyncReset())
     val wrEn    = Input(Bool())
@@ -146,7 +132,6 @@ class AsyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
     val full    = Output(Bool())
     val wrLevel = Output(UInt(addrWidth.W))
 
-    // Read clock domain
     val rdClk   = Input(Clock())
     val rdRst_n = Input(AsyncReset())
     val rdEn    = Input(Bool())
@@ -155,88 +140,79 @@ class AsyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
     val rdLevel = Output(UInt(addrWidth.W))
   })
 
-  // Memory array
   val mem = Mem(depth, UInt(dataWidth.W))
 
-  // ---------------------------
-  // Write domain logic
-  // ---------------------------
+  val wrPtrGrayWire = Wire(UInt((addrWidth + 1).W))
+  val rdPtrGrayWire = Wire(UInt((addrWidth + 1).W))
+
   withClockAndReset(io.wrClk, io.wrRst_n) {
-    val wrPtrBinary = RegInit(0.U((addrWidth+1).W))
-    val wrPtrGray = RegInit(0.U((addrWidth+1).W))
+    val wrPtrBin  = RegInit(0.U((addrWidth + 1).W))
+    val wrPtrGray = RegInit(0.U((addrWidth + 1).W))
+    wrPtrGrayWire := wrPtrGray
 
     when (io.wrEn && !io.full) {
-      wrPtrBinary := wrPtrBinary + 1.U
-      wrPtrGray := (wrPtrBinary + 1.U) ^ ((wrPtrBinary + 1.U) >> 1)
-      mem.write(wrPtrBinary(addrWidth-1, 0), io.din)
+      wrPtrBin  := wrPtrBin + 1.U
+      wrPtrGray := (wrPtrBin + 1.U) ^ ((wrPtrBin + 1.U) >> 1)
+      mem.write(wrPtrBin(addrWidth - 1, 0), io.din)
     }
 
-    // Sync read pointer to write clock domain
-    val rdPtrGraySync1 = Reg(UInt((addrWidth+1).W))
-    val rdPtrGraySync2 = Reg(UInt((addrWidth+1).W))
-    rdPtrGraySync1 := rdPtrGray
-    rdPtrGraySync2 := rdPtrGraySync1
+    val rdGraySync1 = Reg(UInt((addrWidth + 1).W))
+    val rdGraySync2 = Reg(UInt((addrWidth + 1).W))
+    rdGraySync1 := rdPtrGrayWire
+    rdGraySync2 := rdGraySync1
 
-    // Convert gray back to binary for comparison
     def grayToBinary(gray: UInt, width: Int): UInt = {
       val binary = Wire(Vec(width, UInt(1.W)))
-      binary(width-1) = gray(width-1)
-      for (i <- (width-2) to 0 by -1) {
-        binary(i) = gray(i) ^ binary(i+1)
+      binary(width - 1) := gray(width - 1)
+      for (i <- (width - 2) to 0 by -1) {
+        binary(i) := gray(i) ^ binary(i + 1)
       }
       binary.asUInt
     }
 
-    val rdPtrBinarySync = grayToBinary(rdPtrGraySync2, addrWidth+1)
-    val wrPtrBinaryLocal = wrPtrBinary
+    val rdPtrBinarySync = grayToBinary(rdGraySync2, addrWidth + 1)
+    val wrPtrBinaryLocal = wrPtrBin
 
-    // Full condition: MSB different + next addr bits all same
-    io.full := (wrPtrGray(addrWidth) =/= rdPtrGraySync2(addrWidth)) &&
-               (wrPtrGray(addrWidth-1) =/= rdPtrGraySync2(addrWidth-1)) &&
-               (wrPtrGray(addrWidth-2, 0) === rdPtrGraySync2(addrWidth-2, 0))
+    io.full := (wrPtrGray(addrWidth) =/= rdGraySync2(addrWidth)) &&
+               (wrPtrGray(addrWidth - 1) =/= rdGraySync2(addrWidth - 1)) &&
+               (wrPtrGray(addrWidth - 2, 0) === rdGraySync2(addrWidth - 2, 0))
 
-    io.wrLevel := (wrPtrBinaryLocal - rdPtrBinarySync)(addrWidth-1, 0)
+    io.wrLevel := (wrPtrBinaryLocal - rdPtrBinarySync)(addrWidth - 1, 0)
   }
 
-  // ---------------------------
-  // Read domain logic
-  // ---------------------------
   withClockAndReset(io.rdClk, io.rdRst_n) {
-    val rdPtrBinary = RegInit(0.U((addrWidth+1).W))
-    val rdPtrGray = RegInit(0.U((addrWidth+1).W))
+    val rdPtrBin  = RegInit(0.U((addrWidth + 1).W))
+    val rdPtrGray = RegInit(0.U((addrWidth + 1).W))
+    rdPtrGrayWire := rdPtrGray
 
     when (io.rdEn && !io.empty) {
-      rdPtrBinary := rdPtrBinary + 1.U
-      rdPtrGray := (rdPtrBinary + 1.U) ^ ((rdPtrBinary + 1.U) >> 1)
+      rdPtrBin  := rdPtrBin + 1.U
+      rdPtrGray := (rdPtrBin + 1.U) ^ ((rdPtrBin + 1.U) >> 1)
     }
-    io.dout := mem.read(rdPtrBinary(addrWidth-1, 0))
+    io.dout := mem.read(rdPtrBin(addrWidth - 1, 0))
 
-    // Sync write pointer to read clock domain
-    val wrPtrGraySync1 = Reg(UInt((addrWidth+1).W))
-    val wrPtrGraySync2 = Reg(UInt((addrWidth+1).W))
-    wrPtrGraySync1 := wrPtrGray
-    wrPtrGraySync2 := wrPtrGraySync1
+    val wrGraySync1 = Reg(UInt((addrWidth + 1).W))
+    val wrGraySync2 = Reg(UInt((addrWidth + 1).W))
+    wrGraySync1 := wrPtrGrayWire
+    wrGraySync2 := wrGraySync1
 
-    // Empty condition: pointers equal
-    io.empty := rdPtrGray === wrPtrGraySync2
-
-    def grayToBinary(gray: UInt, width: Int): UInt = {
+    def grayToBinaryRd(gray: UInt, width: Int): UInt = {
       val binary = Wire(Vec(width, UInt(1.W)))
-      binary(width-1) = gray(width-1)
-      for (i <- (width-2) to 0 by -1) {
-        binary(i) = gray(i) ^ binary(i+1)
+      binary(width - 1) := gray(width - 1)
+      for (i <- (width - 2) to 0 by -1) {
+        binary(i) := gray(i) ^ binary(i + 1)
       }
       binary.asUInt
     }
 
-    val wrPtrBinarySync = grayToBinary(wrPtrGraySync2, addrWidth+1)
-    val rdPtrBinaryLocal = rdPtrBinary
-    io.rdLevel := (wrPtrBinarySync - rdPtrBinaryLocal)(addrWidth-1, 0)
+    val wrPtrBinarySync = grayToBinaryRd(wrGraySync2, addrWidth + 1)
+    val rdPtrBinaryLocal = rdPtrBin
+    io.rdLevel := (wrPtrBinarySync - rdPtrBinaryLocal)(addrWidth - 1, 0)
+    io.empty := rdPtrGray === wrGraySync2
   }
 }
 
 // 7. 格雷码计数器 (Gray Code Counter)
-// 用于异步FIFO的地址指针，避免多位同时翻转
 class GrayCounter(width: Int = 4) extends Module {
   val io = IO(new Bundle {
     val clk   = Input(Clock())
@@ -257,17 +233,14 @@ class GrayCounter(width: Int = 4) extends Module {
 }
 
 // 8. 握手信号的异步包装 (Async Handshake Wrapper)
-// 将单bit请求应答信号跨时钟域
 class AsyncHandshake(dataType: UInt, dataWidth: Int = 32) extends Module {
   val io = IO(new Bundle {
-    // Write side (send)
     val wrClk   = Input(Clock())
     val wrRst_n = Input(AsyncReset())
     val wrValid = Input(Bool())
     val wrReady = Output(Bool())
     val wrData  = Input(UInt(dataWidth.W))
 
-    // Read side (recv)
     val rdClk   = Input(Clock())
     val rdRst_n = Input(AsyncReset())
     val rdValid = Output(Bool())
@@ -275,7 +248,6 @@ class AsyncHandshake(dataType: UInt, dataWidth: Int = 32) extends Module {
     val rdData  = Output(UInt(dataWidth.W))
   })
 
-  // 使用异步FIFO实现，深度为2^addrWidth
   val fifo = Module(new AsyncFifo(dataWidth, 2))
   fifo.io.wrClk   := io.wrClk
   fifo.io.wrRst_n := io.wrRst_n
@@ -287,5 +259,5 @@ class AsyncHandshake(dataType: UInt, dataWidth: Int = 32) extends Module {
   fifo.io.rdRst_n := io.rdRst_n
   fifo.io.rdEn    := io.rdReady && !fifo.io.empty
   io.rdValid      := !fifo.io.empty
-  io.rdData       := fifio.dout
+  io.rdData       := fifo.io.dout
 }

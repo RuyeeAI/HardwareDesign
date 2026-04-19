@@ -254,13 +254,9 @@ class ClockGating extends Module {
     val gclk = Output(Clock())
   })
   // 基于锁存器的时钟门控
-  val latchEn = Wire(Bool())
-  latchEn := io.en
-  when (!io.clk.asUInt.asBool) {
-    latchEn := io.en
-  }
-  val gatedClk = io.clk.asUInt & latchEn
-  io.gclk := gatedClk.asClock
+  val latchEn = RegEnable(io.en, false.B, !io.clk.asBool)
+  val gatedClk = io.clk.asUInt & latchEn.asUInt
+  io.gclk := gatedClk(0).asClock
 }
 
 // 二输入与或非门 AOI22
