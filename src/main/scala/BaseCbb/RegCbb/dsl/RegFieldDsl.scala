@@ -41,9 +41,14 @@ case class RegFieldDef(
   enumerations: Map[BigInt, (String, String)] = Map()
 ) {
   require(bitWidth > 0, s"Field $name: bitWidth must be > 0")
-  require(bitWidth <= 32, s"Field $name: bitWidth must be <= 32")
-  require(resetValue >= 0 && resetValue < (1L << bitWidth),
-    s"Field $name: resetValue $resetValue out of range for $bitWidth bits")
+  require(bitWidth <= 256, s"Field $name: bitWidth must be <= 256")
+  require(resetValue >= 0,
+    s"Field $name: resetValue $resetValue must be >= 0")
+  // For resetValue range, use BigInt for >64bit widths
+  if (bitWidth <= 64) {
+    require(resetValue < (BigInt(1) << bitWidth),
+      s"Field $name: resetValue $resetValue out of range for $bitWidth bits")
+  }
 }
 
 /** Fluent DSL for building a field */

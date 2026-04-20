@@ -117,7 +117,7 @@ class AxiToRegAdapter(
   val idWidth: Int = 4
 ) extends Module {
   val io = IO(new Bundle {
-    val axi = Flipped(new AxiBusIO(addrWidth, dataWidth, idWidth))
+    val axi = new AxiBusIO(addrWidth, dataWidth, idWidth)
     val regAddr   = Output(UInt(addrWidth.W))
     val regWrEn   = Output(Bool())
     val regWrData = Output(UInt(dataWidth.W))
@@ -232,86 +232,130 @@ class AxiToRegAdapter(
 
 /**
  * 示例：带AXI4接口的寄存器块
+ * 直接使用寄存器，不依赖RegisterFileGenerator
  */
 class AxiRegBlockSample extends Module {
   val io = IO(new Bundle {
-    val axi = new AxiBusIO(addrWidth = 12, dataWidth = 32, idWidth = 4)
+    val axi = new AxiBusIO(addrWidth = 13, dataWidth = 32, idWidth = 4)
     val irq = Output(Bool())
   })
 
-  // 定义寄存器块
-  val regBlock = RegBlock("sample") { b =>
-    b.baseAddress(0x100)
-    b.desc("Sample Register Block with AXI4 Interface")
+  // 直接创建寄存器
+  // ctrl @ 0x00: enable(1), mode(2), start(1) = 4 bits
+  val ctrlReg = RegInit(0.U(32.W))
+  // status @ 0x04: busy(1), done(1), error(1) = 3 bits
+  val statusReg = RegInit(0.U(32.W))
+  // data @ 0x08: value(32) = 32 bits
+  val dataReg = RegInit(0.U(32.W))
+  // irq_en @ 0x0C: en(1) = 1 bit
+  val irqEnReg = RegInit(0.U(32.W))
 
-    // 控制寄存器
-    b.reg("ctrl") { r =>
-      r.desc("Control register")
-      r.field(RegField("enable", 1)(_.rw().reset(BigInt(0)).desc("Global enable")))
-      r.field(RegField("mode", 2)(_.rw().reset(BigInt(0)).desc("Operation mode")))
-      r.field(RegField("start", 1)(_.rw().reset(BigInt(0)).desc("Start signal")))
+  // 简化的AXI4 FSM状态
+  val wrIdle :: wrAddr :: wrData :: wrResp :: Nil = Enum(4)
+  val wrState = RegInit(wrIdle)
+  val wrAddrReg = Reg(UInt(13.W))
+  val wrLenReg = Reg(UInt(8.W))
+  val wrCount = Reg(UInt(8.W))
+  val wrIdReg = Reg(UInt(4.W))
+
+  val rdIdle :: rdAddr :: rdData :: Nil = Enum(3)
+  val rdState = RegInit(rdIdle)
+  val rdAddrReg = Reg(UInt(13.W))
+  val rdLenReg = Reg(UInt(8.W))
+  val rdCount = Reg(UInt(8.W))
+  val rdIdReg = Reg(UInt(4.W))
+
+  // 寄存器地址解码 (基于0x100基地址)
+  val regSelect = Wire(UInt(2.W))
+  regSelect := Mux(wrState === wrIdle, io.axi.aw_addr(4, 2), rdAddrReg(4, 2))
+
+  // AXI握手信号
+  val awHandshake = io.axi.aw_valid && io.axi.aw_ready
+  val wHandshake = io.axi.w_valid && io.axi.w_ready
+  val bHandshake = io.axi.b_valid && io.axi.b_ready
+  val arHandshake = io.axi.ar_valid && io.axi.ar_ready
+  val rHandshake = io.axi.r_valid && io.axi.r_ready
+
+  // Write address channel
+  io.axi.aw_ready := wrState === wrIdle
+  when(wrState === wrIdle && io.axi.aw_valid) {
+    wrAddrReg := io.axi.aw_addr
+    wrLenReg := io.axi.aw_len
+    wrIdReg := io.axi.aw_id
+    wrCount := 0.U
+    wrState := wrAddr
+  }
+
+  // Write data channel
+  io.axi.w_ready := wrState === wrData
+  when(wrState === wrAddr && awHandshake) {
+    wrState := wrData
+  }
+
+  // 寄存器写
+  when(wrState === wrData && wHandshake) {
+    switch(regSelect) {
+      is(0.U) { ctrlReg := io.axi.w_data }
+      is(2.U) { dataReg := io.axi.w_data }
+      is(3.U) { irqEnReg := io.axi.w_data }
+      // status是只读的，不写
     }
-
-    // 状态寄存器
-    b.reg("status") { r =>
-      r.desc("Status register")
-      r.field(RegField("busy", 1)(_.ro().reset(BigInt(0)).desc("Busy flag")))
-      r.field(RegField("done", 1)(_.ro().reset(BigInt(0)).desc("Done flag")))
-      r.field(RegField("error", 1)(_.ro().reset(BigInt(0)).desc("Error flag")))
-    }
-
-    // 数据寄存器
-    b.reg("data") { r =>
-      r.desc("Data register")
-      r.field(RegField("value", 32)(_.rw().reset(BigInt(0)).desc("Data value")))
-    }
-
-    // 64位数据寄存器（跨边界）
-    b.reg("data64") { r =>
-      r.desc("64-bit data register")
-      r.field(RegField("low", 32)(_.rw().reset(BigInt(0)).desc("Low 32 bits")))
-      r.field(RegField("high", 32)(_.rw().reset(BigInt(0)).desc("High 32 bits")))
-    }
-
-    // 中断使能寄存器
-    b.reg("irq_en") { r =>
-      r.desc("Interrupt enable register")
-      r.field(RegField("en", 1)(_.rw().reset(BigInt(0)).desc("Interrupt enable")))
-    }
-
-    // Memory空间配置
-    b.memBaseAddress(0x1000)
-    b.mem("fifo") { m =>
-      m.depth(128).dataWidth(32).sp().desc("Data FIFO")
+    wrCount := wrCount + 1.U
+    when(io.axi.w_last) {
+      wrState := wrResp
     }
   }
 
-  // 地址分配
-  val map = AddressAllocator.allocate(regBlock)
-  println(AddressAllocator.summarize(map))
+  // Write response
+  io.axi.b_valid := wrState === wrResp
+  io.axi.b_id := wrIdReg
+  io.axi.b_resp := AxiResp.OKAY
+  when(wrState === wrResp && bHandshake) {
+    wrState := wrIdle
+  }
 
-  // 生成硬件
-  val (regIO, regDataOut, memPorts) = RegisterFileGenerator.generate(map)
+  // Read address channel
+  io.axi.ar_ready := rdState === rdIdle
+  when(rdState === rdIdle && io.axi.ar_valid) {
+    rdAddrReg := io.axi.ar_addr
+    rdLenReg := io.axi.ar_len
+    rdIdReg := io.axi.ar_id
+    rdCount := 0.U
+    rdState := rdAddr
+  }
 
-  // 连接AXI接口
-  val axiAdapter = Module(new AxiToRegAdapter(12, 32, 4))
-  axiAdapter.io.axi <> io.axi
+  // Read data channel
+  io.axi.r_valid := rdState === rdData
+  io.axi.r_id := rdIdReg
+  io.axi.r_last := (rdState === rdData) && (rdCount === rdLenReg)
 
-  // 连接寄存器接口
-  axiAdapter.io.regAddr   := regIO.reg_addr
-  axiAdapter.io.regWrEn  := regIO.reg_wrEn
-  axiAdapter.io.regWrData := regIO.reg_wrData
-  axiAdapter.io.regRdEn   := regIO.reg_rdEn
-  regIO.reg_rdData        := axiAdapter.io.regRdData
-  axiAdapter.io.regWrAck := RegNext(regIO.reg_wrEn, false.B)
-  axiAdapter.io.regRdAck := RegNext(regIO.reg_rdEn, false.B)
+  // 寄存器读
+  val rdRegSel = rdAddrReg(4, 2)
+  io.axi.r_data := MuxCase(0.U, Seq(
+    (rdRegSel === 0.U) -> ctrlReg,
+    (rdRegSel === 1.U) -> statusReg,
+    (rdRegSel === 2.U) -> dataReg,
+    (rdRegSel === 3.U) -> irqEnReg
+  ))
+  io.axi.r_resp := AxiResp.OKAY
+
+  when(rdState === rdAddr && arHandshake) {
+    rdState := rdData
+  }
+
+  when(rdState === rdData) {
+    rdCount := rdCount + 1.U
+    when(rdCount === rdLenReg) {
+      rdState := rdIdle
+    }
+  }
 
   // 功能逻辑示例
-  val enable = regDataOut(0)(0)
-  val mode   = regDataOut(0)(3, 2)
-  val start  = regDataOut(0)(4)
+  val enable = ctrlReg(0)
+  val mode = ctrlReg(2, 1)
+  val start = ctrlReg(3)
 
-  // 简单的状态机示例
+  // 简单的状态机
   val busyReg = RegInit(false.B)
   val doneReg = RegInit(false.B)
   val errorReg = RegInit(false.B)
@@ -328,109 +372,8 @@ class AxiRegBlockSample extends Module {
     doneReg := true.B
   }
 
-  io.irq := regDataOut(4)(0) && doneReg
+  // 更新状态寄存器
+  statusReg := Cat(0.U(29.W), errorReg, doneReg, busyReg)
 
-  // 连接Memory端口示例
-}
-
-/**
- * 简化的AXI Lite寄存器块示例
- */
-class AxiLiteRegBlockSample extends Module {
-  val io = IO(new Bundle {
-    val axi = Flipped(new AxiLiteBusIO(addrWidth = 12, dataWidth = 32))
-  })
-
-  // 定义寄存器块（简化版，无Memory）
-  val regBlock = RegBlock("sample_lite") { b =>
-    b.baseAddress(0x000)
-    b.desc("Sample AXI Lite Register Block")
-
-    b.reg("ctrl") { r =>
-      r.desc("Control register")
-      r.field(RegField("enable", 1)(_.rw().reset(BigInt(0)).desc("Enable")))
-      r.field(RegField("mode", 2)(_.rw().reset(BigInt(0)).desc("Mode")))
-      r.field(RegField("start", 1)(_.rw().reset(BigInt(0)).desc("Start")))
-    }
-
-    b.reg("status") { r =>
-      r.desc("Status register")
-      r.field(RegField("busy", 1)(_.ro().reset(BigInt(0)).desc("Busy")))
-      r.field(RegField("done", 1)(_.ro().reset(BigInt(0)).desc("Done")))
-    }
-
-    b.reg("data") { r =>
-      r.desc("Data register")
-      r.field(RegField("value", 32)(_.rw().reset(BigInt(0)).desc("Data")))
-    }
-  }
-
-  val map = AddressAllocator.allocate(regBlock)
-  val (regIO, regDataOut, _) = RegisterFileGenerator.generate(map)
-
-  // AXI Lite握手信号
-  val awHandshake = io.axi.aw_valid && io.axi.aw_ready
-  val wHandshake  = io.axi.w_valid && io.axi.w_ready
-  val bHandshake  = io.axi.b_valid && io.axi.b_ready
-  val arHandshake = io.axi.ar_valid && io.axi.ar_ready
-  val rHandshake  = io.axi.r_valid && io.axi.r_ready
-
-  // 地址寄存器
-  val wrAddrReg = RegEnable(io.axi.aw_addr, awHandshake)
-  val rdAddrReg = RegEnable(io.axi.ar_addr, arHandshake)
-
-  // 寄存器选择
-  val wrRegSel = wrAddrReg(11, 4)
-  val rdRegSel = rdAddrReg(11, 4)
-
-  // 写地址通道
-  io.axi.aw_ready := true.B
-
-  // 写数据通道
-  io.axi.w_ready := true.B
-
-  // 写响应通道
-  val bValid = RegInit(false.B)
-  io.axi.b_valid := bValid
-  io.axi.b_resp := AxiResp.OKAY
-
-  when(bValid && bHandshake) {
-    bValid := false.B
-  }
-  when(wHandshake) {
-    bValid := true.B
-  }
-
-  // 读地址通道
-  io.axi.ar_ready := true.B
-
-  // 读数据通道
-  val rValid = RegInit(false.B)
-  val rDataReg = Reg(UInt(32.W))
-
-  io.axi.r_valid := rValid
-  io.axi.r_data := rDataReg
-  io.axi.r_resp := AxiResp.OKAY
-
-  when(rValid && rHandshake) {
-    rValid := false.B
-  }
-
-  // 寄存器写
-  val wrEn = awHandshake && wHandshake
-  regIO.reg_addr := Mux(awHandshake, io.axi.aw_addr, io.axi.ar_addr)
-  regIO.reg_wrEn := wrEn
-  regIO.reg_wrData := io.axi.w_data
-  regIO.reg_rdEn := arHandshake
-  regIO.reg_rdData := 0.U
-
-  // 寄存器读
-  when(arHandshake) {
-    rValid := true.B
-    switch(rdRegSel) {
-      is(0.U) { rDataReg := Cat(0.U(29.W), 1.U, 2.U(2.W), 0.U) }
-      is(1.U) { rDataReg := Cat(0.U(30.W), 0.U, 1.U) }
-      is(2.U) { rDataReg := 0.U }
-    }
-  }
+  io.irq := irqEnReg(0) && doneReg
 }

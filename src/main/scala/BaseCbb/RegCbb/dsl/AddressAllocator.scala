@@ -13,6 +13,8 @@ case class RegisterAllocation(
   register: RegDef,
   byteOffset: BigInt,
   byteSize: Int,
+  wordOffset: Int,      // 起始32bit word索引 (addr[11:2])
+  wordCount: Int,       // 占用的32bit word数量
   fieldAllocations: Seq[FieldAllocation]
 )
 
@@ -49,6 +51,10 @@ object AddressAllocator {
         currentRegOffset
       }
 
+      // Calculate word-based addressing (each word = 32 bits)
+      val wordOffset = ((block.regBaseAddress + alignedOffset) / 4).toInt
+      val wordCount = (byteSize + 3) / 4
+
       // Allocate field positions within register (LSB-first)
       var currentBit = 0
       val fieldAllocations = reg.fields.map { field =>
@@ -63,7 +69,7 @@ object AddressAllocator {
       }
 
       currentRegOffset = alignedOffset + byteSize
-      RegisterAllocation(reg, alignedOffset, byteSize, fieldAllocations)
+      RegisterAllocation(reg, alignedOffset, byteSize, wordOffset, wordCount, fieldAllocations)
     }
 
     // Allocate memory addresses (each memory has its own space)
@@ -97,7 +103,7 @@ object AddressAllocator {
 
     sb ++= "=== Registers ===\n"
     map.registerAllocations.foreach { regAlloc =>
-      sb ++= s"  ${regAlloc.register.name} @ offset 0x${regAlloc.byteOffset.toString(16)} (${regAlloc.byteSize} bytes)\n"
+      sb ++= s"  ${regAlloc.register.name} @ offset 0x${regAlloc.byteOffset.toString(16)} (${regAlloc.byteSize} bytes, word ${regAlloc.wordOffset}, ${regAlloc.wordCount} words)\n"
       regAlloc.fieldAllocations.foreach { fieldAlloc =>
         val field = fieldAlloc.field
         sb ++= s"    Field: ${field.name} [${field.bitWidth}b] @ byte ${fieldAlloc.byteOffset}, bit ${fieldAlloc.bitOffset}\n"
