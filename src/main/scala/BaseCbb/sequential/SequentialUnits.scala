@@ -219,67 +219,6 @@ class ClkDiv(div: Int = 10) extends Module {
   io.clkOut := clkOutReg
 }
 
-// 同步FIFO
-class SyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
-  val depth = 1 << addrWidth
-  val io = IO(new Bundle {
-    val clk   = Input(Clock())
-    val rst_n = Input(AsyncReset())
-    // Write
-    val wrEn  = Input(Bool())
-    val din   = Input(UInt(dataWidth.W))
-    // Read
-    val rdEn  = Input(Bool())
-    val dout  = Output(UInt(dataWidth.W))
-    // Status
-    val empty = Output(Bool())
-    val full  = Output(Bool())
-    val level = Output(UInt(addrWidth.W))
-  })
-
-  val mem = Mem(depth, UInt(dataWidth.W))
-  val wrPtr = Reg(UInt(addrWidth.W))
-  val rdPtr = Reg(UInt(addrWidth.W))
-  val count = Reg(UInt((addrWidth + 1).W))
-
-  io.empty := count === 0.U
-  io.full  := count === depth.U
-  io.level := count
-
-  // Write
-  withClockAndReset(io.clk, io.rst_n) {
-    when (!io.rst_n.asBool) {
-      wrPtr := 0.U
-    } .elsewhen (io.wrEn && !io.full) {
-      mem.write(wrPtr, io.din)
-      wrPtr := wrPtr + 1.U
-    }
-  }
-
-  // Read
-  withClockAndReset(io.clk, io.rst_n) {
-    when (!io.rst_n.asBool) {
-      rdPtr := 0.U
-      io.dout := 0.U
-    } .elsewhen (io.rdEn && !io.empty) {
-      io.dout := mem.read(rdPtr)
-      rdPtr := rdPtr + 1.U
-    }
-  }
-
-  // Count
-  withClockAndReset(io.clk, io.rst_n) {
-    when (!io.rst_n.asBool) {
-      count := 0.U
-    } .otherwise {
-      switch (Cat(io.wrEn && !io.full, io.rdEn && !io.empty)) {
-        is ("b10".U) { count := count + 1.U }
-        is ("b01".U) { count := count - 1.U }
-      }
-    }
-  }
-}
-
 // 三段式FSM模板
 object FsmStates {
   val sIDLE :: sBUSY :: sDONE :: Nil = Enum(3)

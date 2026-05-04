@@ -292,3 +292,4 @@ class w1t(info: RegInfo) extends Module {
   io.core.wrEn := wrEnReg
   io.core.wrData := io.dec.in.wdata.asTypeOf(info.DataType)
 }
+

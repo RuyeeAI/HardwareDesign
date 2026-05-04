@@ -121,8 +121,8 @@ class Handshake[T <: Data](dataType: T) extends Module {
   io.dstData  := regData
 }
 
-// 6. 异步FIFO (Asynchronous FIFO)
-class AsyncFifo(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
+// 6. 异步FIFO内部实现 (Asynchronous FIFO) — 仅供 AsyncHandshake 使用
+class AsyncFifoCore(dataWidth: Int = 32, addrWidth: Int = 4) extends Module {
   val depth = 1 << addrWidth
   val io = IO(new Bundle {
     val wrClk   = Input(Clock())
@@ -248,7 +248,7 @@ class AsyncHandshake(dataType: UInt, dataWidth: Int = 32) extends Module {
     val rdData  = Output(UInt(dataWidth.W))
   })
 
-  val fifo = Module(new AsyncFifo(dataWidth, 2))
+  val fifo = Module(new AsyncFifoCore(dataWidth, 2))
   fifo.io.wrClk   := io.wrClk
   fifo.io.wrRst_n := io.wrRst_n
   fifo.io.wrEn    := io.wrValid && !fifo.io.full
