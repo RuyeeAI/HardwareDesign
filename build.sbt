@@ -8,8 +8,8 @@ lazy val root = (project in file("."))
   .settings(
     name := "HardwareDesign",
     libraryDependencies ++= Seq(
-      "edu.berkeley.cs" %% "chisel" % chiselVersion,
-      "org.scalatest" %% "scalatest" % "3.2.16" % "test",
+      "edu.berkeley.cs" %% "chisel3" % chiselVersion,
+      "org.scalatest" %% "scalatest" % "3.2.20" % "test",
       "edu.berkeley.cs" %% "chiseltest" % "0.6.2" % Test,
     ),
     scalacOptions ++= Seq(

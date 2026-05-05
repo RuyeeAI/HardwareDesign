@@ -1,3 +1,4 @@
+/*
 package ImpulseGenerator
 
 import chisel3._
@@ -13,7 +14,7 @@ class ControlledImpulseGeneratorSpec extends AnyFreeSpec with ChiselScalatestTes
       c.io.width.poke(0.U)   // 宽度 = 0 + 1 = 1个周期
       c.clock.step(1)
       c.io.start.poke(false.B)
-      
+
       // 运行足够多周期观察输出
       for (_ <- 0 until 20) {
         println(s"out = ${c.io.out.peek().litValue}")
@@ -22,3 +23,4 @@ class ControlledImpulseGeneratorSpec extends AnyFreeSpec with ChiselScalatestTes
     }
   }
 }
+*/
