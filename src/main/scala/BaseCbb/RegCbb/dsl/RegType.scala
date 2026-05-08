@@ -175,7 +175,7 @@ class wo(info: RegInfo) extends Module {
  */
 class ro(info: RegInfo) extends Module {
   val io = IO(new Bundle {
-    val dec = Flipped(new dec_out(info.DataType))
+    val dec = new dec_out(info.DataType)
     val core = new ro_core_if(info)
   })
 

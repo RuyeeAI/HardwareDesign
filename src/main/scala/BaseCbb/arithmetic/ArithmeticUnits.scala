@@ -18,14 +18,16 @@ class RippleCarryAdder(width: Int = 32) extends Module {
   carry(0) := io.cin
   io.cout := carry(width)
 
+  val sumBits = Wire(Vec(width, Bool()))
   for (i <- 0 until width) {
     val add = Module(new FullAdd())
     add.io.a := io.a(i)
     add.io.b := io.b(i)
     add.io.cin := carry(i)
-    io.sum(i) := add.io.sum
+    sumBits(i) := add.io.sum
     carry(i + 1) := add.io.cout
   }
+  io.sum := sumBits.asUInt
 }
 
 // N位进位选择加法器 (N-bit Carry Select Adder)
@@ -43,7 +45,7 @@ class CarrySelectAdder(width: Int = 32, blockSize: Int = 4) extends Module {
   carry(0) := io.cin
   io.cout := carry(numBlocks)
 
-  for (i <- 0 until numBlocks) {
+  val blockSums = (0 until numBlocks).map { i =>
     val start = i * blockSize
     val end = Math.min((i + 1) * blockSize - 1, width - 1)
     val blockWidth = end - start + 1
@@ -67,9 +69,10 @@ class CarrySelectAdder(width: Int = 32, blockSize: Int = 4) extends Module {
     sum1 := rca1.io.sum
     cout1 := rca1.io.cout
 
-    io.sum(end, start) := Mux(carry(i), sum1, sum0)
     carry(i + 1) := Mux(carry(i), cout1, cout0)
+    Mux(carry(i), sum1, sum0)
   }
+  io.sum := Cat(blockSums.reverse)
 }
 
 // N位减法器

@@ -1,8 +1,8 @@
 package BaseCbb
-
-import BaseCbb.MemoryAccessType.MemoryAccessType
 import chisel3._
-
+import MemoryAccessType.{MemoryAccessType, SP}
+import MemoryInitType.{AllZero, MemoryInitType}
+import MemoryProtectType.{MemoryProtectType,ECC,Parity}
 import java.lang.reflect.Field
 import scala.collection.mutable.{ArrayBuffer, ArrayStack}
 class GenModule extends Module
@@ -147,36 +147,103 @@ object MemoryAccessType extends Enumeration {
   val SP, TP, DP, TCAM  = Value
 }
 
-case class Memory(
-                 Name:String,
-                 dt:Data,
-                 depth:Int,
-                 AccessType:MemoryAccessType,
-                 InstNum:Int,
-                 Protect:String="Default",
-                 MaskSize:Int = 0,
-                 InputPipe:Boolean = false,
-                 OutputPipe:Boolean = true,
-                 InitValue:String = "0",
-                 ErrInsert:Boolean = true,
-                 Hazard:Boolean = false,
-                 EccTh:Int = 2048,
-                 Fatal:Boolean = false
-                 ){
-  val Width = dt.getWidth
-  def toMap={
-    var map:Map[String,Any] = Map()
-    map +=("Name"->Name)
-    map +=("AccessType"->AccessType)
-    map +=("Width" -> Width)
-    map +=("Depth" -> depth)
-    map +=("InstNum"->InstNum)
-    map
-
-
-  }
-//  val protectType = GenCheckType(Width,depth,Protect)
+object MemoryProtectType extends Enumeration{
+  type MemoryProtectType = Value
+  val ECC,Parity,ProtNone = Value
 }
+object MemoryInitType extends Enumeration{
+  type MemoryInitType = Value
+  val AllZero,AllOne,Incr= Value
+}
+
+
+  case class Memory(
+                     name:String,
+                     dataType:Data,
+                     depth:Int,
+                     memoryType:MemoryAccessType = SP,
+                     instNum:Int = 1,
+                     protect:MemoryProtectType = ECC,
+
+                     flopIn:Boolean=false,
+                     flopOut:Boolean=true,
+                     CheckIn:Boolean=false,
+                     CheckOut:Boolean=true,
+
+                     initValue:MemoryInitType= AllZero,
+
+                     Hazard:Boolean = false,
+                     protectWidthTh:Int = 320,
+                     bypassOnConflict:Boolean = false,
+                     Fatal:Boolean = false,
+                     RsAccess:Boolean = false,
+                     RsMemoryDisLat:Int = 32
+                   ) {
+
+
+
+    private def log2Ceil(x: Int): Int = if (x <= 1) 0 else (math.ceil(math.log(x.toDouble) / math.log(2))).toInt
+
+    def dataWidth:Int = {
+      val eccSegNum = math.ceil(dataType.getWidth.toDouble / protectWidthTh).toInt
+      if(protect==ECC) {
+        val eccSegWidth = math.ceil(dataType.getWidth / eccSegNum).toInt
+        val lastEccSegWidth = dataType.getWidth - (eccSegNum - 1) * eccSegWidth
+        val eccTotalWidth = (eccWidth(eccSegWidth) + 1) * (eccSegNum - 1) + (eccWidth(lastEccSegWidth) + 1)
+        eccTotalWidth + dataType.getWidth
+      }else if(protect == Parity){
+        dataType.getWidth + eccSegNum
+      }else{
+        dataType.getWidth
+      }
+    }
+
+    def lastCheckSegWidth = {
+      val eccSegNum = math.ceil(dataType.getWidth.toDouble / protectWidthTh).toInt
+      if(protect==ECC | protect==Parity) {
+        val eccSegWidth = math.ceil(dataType.getWidth / eccSegNum).toInt
+        dataType.getWidth - (eccSegNum - 1) * eccSegWidth
+      }else{
+        dataType.getWidth
+      }
+    }
+
+    def latency :Int = {
+      var lat = 1
+      if(flopIn){
+        lat = lat+1
+      }
+      if(flopOut){
+        lat = lat+1
+      }
+      lat
+    }
+
+    def eccWidth(n:Int):Int={
+      val k = log2Ceil(n)
+      if(math.pow(2,k)>=(n+k+1)){
+        k
+      }else{
+        k+1
+      }
+    }
+
+    def addrWidth:Int = log2Ceil(depth)
+
+    def toMap = {
+      var map: Map[String, Any] = Map()
+      map += ("Name" -> Name)
+      map += ("AccessType" -> memoryType)
+      map += ("Width" -> dataWidth)
+      map += ("Depth" -> depth)
+      map += ("InstNum" -> instNum )
+      map
+  }
+}
+
+
+
+
 
 //abstract class GenMemory{
 //  val TCAM = Memory()
