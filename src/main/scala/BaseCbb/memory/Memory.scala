@@ -1,12 +1,123 @@
 package BaseCbb.memory
-import BaseCbb.MemoryProtectType.{ECC, MemoryProtectType, Parity, ProtNone}
+import BaseCbb.GenBundle
+import chisel3.util._
 import chisel3._
-import chisel3.experimental._
-import chisel3.util.{Cat, Enum, Pipe, RegEnable, ShiftRegister, is, log2Ceil, switch}
-import BaseCbb.{GenBundle, Memory}
 import chisel3.stage.ChiselStage
-
 import java.io.PrintWriter
+
+
+object MemoryAccessType extends Enumeration {
+  type MemoryAccessType = Value
+  val SP, TP, DP, TCAM  = Value
+}
+
+object MemoryProtectType extends Enumeration{
+  type MemoryProtectType = Value
+  val ECC,Parity,ProtNone= Value
+}
+object MemoryInitType extends Enumeration{
+  type MemoryInitType = Value
+  val AllZero,AllOne,Incr= Value
+}
+
+// Bring only the type aliases into scope (not Value, which would be ambiguous)
+import MemoryAccessType.MemoryAccessType
+import MemoryInitType.MemoryInitType
+import MemoryProtectType.MemoryProtectType
+
+
+case class Memory(
+                   /**
+                    * Logic Part
+                    */
+                   name:String,
+                   dataType:Data,
+                   depth:Int,
+                   memoryType:MemoryAccessType = MemoryAccessType.SP,
+                   instNum:Int = 1,
+                   Hazard:Boolean = false,
+                   Fatal:Boolean = false,
+                   RsAccess:Boolean = false,
+                   initValue:MemoryInitType = MemoryInitType.AllZero,
+
+                   /**
+                    * flop in/out
+                    */
+                   flopIn:Boolean=false,
+                   flopOut:Boolean=true,
+                   CheckIn:Boolean=false,
+                   CheckOut:Boolean=true,
+                   protect:MemoryProtectType = MemoryProtectType.ECC,
+                   isPhysicalMemory:Boolean=false,
+                   /**
+                    * Default configuration
+                    */
+                   protectWidthTh:Int = 320,
+                   bypassOnConflict:Boolean = false,
+                   RsMemoryDisLat:Int = 32
+                 ) {
+
+
+
+  private def log2Ceil(x: Int): Int = if (x <= 1) 0 else math.ceil(math.log(x.toDouble) / math.log(2)).toInt
+
+  def dataWidth:Int = {
+    val eccSegNum = math.ceil(dataType.getWidth.toDouble / protectWidthTh).toInt
+    if(protect == MemoryProtectType.ECC) {
+      val eccSegWidth = math.ceil(dataType.getWidth / eccSegNum).toInt
+      val lastEccSegWidth = dataType.getWidth - (eccSegNum - 1) * eccSegWidth
+      val eccTotalWidth = (eccWidth(eccSegWidth) + 1) * (eccSegNum - 1) + (eccWidth(lastEccSegWidth) + 1)
+      eccTotalWidth + dataType.getWidth
+    }else if(protect == MemoryProtectType.Parity){
+      dataType.getWidth + eccSegNum
+    }else{
+      dataType.getWidth
+    }
+  }
+
+  def lastCheckSegWidth:Int = {
+    val eccSegNum = math.ceil(dataType.getWidth.toDouble / protectWidthTh).toInt
+    if(protect == MemoryProtectType.ECC | protect == MemoryProtectType.Parity) {
+      val eccSegWidth = math.ceil(dataType.getWidth / eccSegNum).toInt
+      dataType.getWidth - (eccSegNum - 1) * eccSegWidth
+    }else{
+      dataType.getWidth
+    }
+  }
+
+  def latency :Int = {
+    var lat = 1
+    if(flopIn){
+      lat = lat+1
+    }
+    if(flopOut){
+      lat = lat+1
+    }
+    lat
+  }
+
+  def eccWidth(n:Int):Int={
+    val k = log2Ceil(n)
+    if(math.pow(2,k)>=(n+k+1)){
+      k
+    }else{
+      k+1
+    }
+  }
+
+  def addrWidth:Int = log2Ceil(depth)
+
+  def toMap: Map[String, Any] = {
+    var map: Map[String, Any] = Map()
+    map += ("Name" -> Name)
+    map += ("AccessType" -> memoryType)
+    map += ("Width" -> dataWidth)
+    map += ("Depth" -> depth)
+    map += ("InstNum" -> instNum )
+    map
+  }
+}
+
 
 
 class SpMemoryPort(val addrWidth:Int,val dataWidth:Int) extends GenBundle {
@@ -122,16 +233,12 @@ class SimMemory(dataWidth:Int,depth:Int) extends Module {
 
 class MemoryWrap extends RawModule{
   //Change the memory to Simulation or Physical memory
-  def MEM_TYPE = "SIMULATION"
-  //def MEM_TYPE = "BB"
 }
 
 /**
  * SpMemoryWrap — 单口 SRAM 封装，支持输入/输出插拍
  *
  * @param mem          Memory 配置对象（name/depth/dataType/flopIn/flopOut）
- * @param flopInDepth  输入侧插拍深度（-1 = 从 mem.flopIn 推导：1 或 0）
- * @param flopOutDepth 输出侧插拍深度（-1 = 从 mem.flopOut 推导：1 或 0）
  */
 class SpMemoryWrap(
   mem:          Memory
@@ -163,7 +270,7 @@ class SpMemoryWrap(
   // ================================================================
   // Physical memory instance
   // ================================================================
-  if (MEM_TYPE != "SIMULATION") {
+  if (mem.isPhysicalMemory) {
     val mem_inst = Module(new SpMemoryBB(mem)).suggestName(mem.name + "_PHY_MEM")
     mem_inst.io.clk  := clk
     mem_inst.io.we    := pipeInWe
@@ -239,7 +346,7 @@ class TpMemoryWrap(
   // ================================================================
   // Physical memory instance
   // ================================================================
-  if (MEM_TYPE != "SIMULATION") {
+  if (mem.isPhysicalMemory) {
     val mem_inst = Module(new TpMemoryBB(mem)).suggestName(mem.name + "_PHY_MEM")
     mem_inst.io.clk   := clk
     mem_inst.io.we    := pipeInWe
@@ -374,7 +481,7 @@ object EccCodec {
     val syndromeIdx   = syndrome.asUInt - 1.U
     val correctedData = Wire(UInt(rdata.getWidth.W))
     correctedData := receivedData
-    when(syndromeNonZero && parityMismatch) { correctedData := receivedData ^ (1.U << syndromeIdx) }
+    when(syndromeNonZero && parityMismatch) { correctedData := receivedData ^ (1.U << syndromeIdx).asUInt }
     val err  = syndromeNonZero
     val uerr = syndromeNonZero && !parityMismatch
     (correctedData, err, uerr)
@@ -382,9 +489,9 @@ object EccCodec {
 
   def decodeAndCheck(rdata: UInt, dataBits: Int, protect: MemoryProtectType, eccSegNum: Int, eccSegWidth: Int, lastEccSegWidth: Int): (UInt, Bool, Bool) = {
     protect match {
-      case ProtNone => (rdata, false.B, false.B)
-      case Parity => decodeParity(rdata, eccSegNum, eccSegWidth, lastEccSegWidth)
-      case ECC    => decodeEccMultiSeg(rdata, dataBits, eccSegNum, eccSegWidth, lastEccSegWidth)
+      case MemoryProtectType.ProtNone => (rdata, false.B, false.B)
+      case MemoryProtectType.Parity => decodeParity(rdata, eccSegNum, eccSegWidth, lastEccSegWidth)
+      case MemoryProtectType.ECC    => decodeEccMultiSeg(rdata, dataBits, eccSegNum, eccSegWidth, lastEccSegWidth)
       case _        => (rdata, false.B, false.B)
     }
   }
@@ -559,9 +666,9 @@ class SpMemoryWrap3(mem: Memory) extends Module {
   private val wdataPreEncode = Mux(initActive, initWdata,
                                  Mux(cpuMemStart, cpuWdataRaw, wdataFlopped))
   private val encodedWdata = mem.protect match {
-    case ProtNone => wdataPreEncode
-    case Parity   => EccCodec.encodeParity(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
-    case ECC      => EccCodec.encodeEcc(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
+    case MemoryProtectType.ProtNone => wdataPreEncode
+    case MemoryProtectType.Parity   => EccCodec.encodeParity(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
+    case MemoryProtectType.ECC      => EccCodec.encodeEcc(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
     case _        => wdataPreEncode
   }
 
@@ -772,9 +879,9 @@ class TpMemoryWrap3(mem: Memory) extends Module {
   private val wdataPreEncode = Mux(initActive, initWdata,
                                  Mux(cpuMemStart, cpuWdataRaw, wdataFlopped))
   private val encodedWdata = mem.protect match {
-    case ProtNone => wdataPreEncode
-    case Parity   => EccCodec.encodeParity(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
-    case ECC      => EccCodec.encodeEcc(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
+    case MemoryProtectType.ProtNone => wdataPreEncode
+    case MemoryProtectType.Parity   => EccCodec.encodeParity(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
+    case MemoryProtectType.ECC      => EccCodec.encodeEcc(wdataPreEncode, eccSegNum, eccSegWidth, lastEccSegWidth)
     case _        => wdataPreEncode
   }
 
@@ -828,16 +935,16 @@ class TpMemoryWrap3(mem: Memory) extends Module {
 
 object EmitMemVerilog {
   def main(args: Array[String]): Unit = {
+
     val dir = args.headOption.getOrElse("generated")
     val verilog = ChiselStage.emitSystemVerilog(new SpMemoryWrap3(
       Memory(
-        name    = "TestMemParity",
-        dataType = UInt(64.W),
-        depth   = 32,
-        protect = ECC,
-        CheckIn = true,
-        CheckOut = true,
-        RsAccess = true
+        name = "SampleMem",
+        dataType = UInt(32.W),
+        depth = 64,
+        protect = MemoryProtectType.ECC,
+        flopIn = false,
+        flopOut =true
       )))
     val file = s"$dir/SpMemoryWrap3.sv"
     new PrintWriter(file) { write(verilog); close() }

@@ -18,15 +18,16 @@ class Lfsr(width: Int = 16) extends Module {
     val out  = Output(UInt(width.W))
   })
 
-  // Primitive polynomials for maximum-length LFSR
+  // Primitive polynomials for maximum-length Galois LFSR
+  // Tap value only includes bits that are XORed during feedback (excludes implicit x^width term)
   private val polyTap: Map[Int, BigInt] = Map(
-    8  -> BigInt("b101110001", 2), // x^8 + x^6 + x^5 + x^4 + 1
-    16 -> BigInt("b10000000000101101", 2), // x^16 + x^5 + x^3 + x^2 + 1
-    24 -> BigInt("b1000000000000000000011011", 2), // x^24 + x^4 + x^3 + x + 1
-    32 -> BigInt("b100000000010000000000000000000111", 2) // x^32 + x^22 + x^2 + x + 1
+    8  -> BigInt("10001011", 2),    // 0x8B: x^8 + x^6 + x^5 + x^4 + 1 (tap bits 7,5,4,3,1)
+    16 -> BigInt("101101", 2),      // 0x2D: x^16 + x^5 + x^3 + x^2 + 1 (tap bits 4,2,1,0)
+    24 -> BigInt("1000011011", 2),  // 0x20D: x^24 + x^4 + x^3 + x + 1 (tap bits 9,3,2,0)
+    32 -> BigInt("110000000000000000000111", 2) // 0x60000007: x^32 + x^22 + x^2 + x + 1
   )
 
-  private val tap = polyTap.getOrElse(width, BigInt("b10001000000000001", 2))
+  private val tap = polyTap.getOrElse(width, BigInt("10011", 2))
   private val tapUInt = tap.U(width.W)
 
   val state = RegInit(1.U(width.W))
