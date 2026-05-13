@@ -68,7 +68,7 @@ flowchart TD
     VLAN1 --> OpaqueTag
     VLAN2 --> OpaqueTag
     VLAN2 --> IP
-    VLAN2 --> SUE
+    -- VLAN2 --> SUE
 
     OpaqueTag --> IP
     OpaqueTag --> SUE
@@ -81,61 +81,62 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Start([Input: 32B Packet Data]) --> EthCheck{"EtherType\nbits[15:0]"}
+    Start([Input: 32B Packet Data]) --> EthCheck{"EtherType"}
 
-    EthCheck -->|0x8100 / 0x88a8| Vlan1Detected
-    EthCheck -->|0x0800| Ipv4Detected
-    EthCheck -->|0x86DD| Ipv6Detected
-    EthCheck -->|0xFFFF| OpaqueTagDetected
-    EthCheck -->|0xC0C1| CbfcDetected
-    EthCheck -->|0xC0C3| SueDetected
-    EthCheck -->|Other| NoIpHeader
+    EthCheck -->|"0x8100 / 0x88a8"| Vlan1Detected
+    EthCheck -->|"0x0800"| Ipv4Detected
+    EthCheck -->|"0x86DD"| Ipv6Detected
+    EthCheck -->|"0xFFFF"| OpaqueTagDetected
+    EthCheck -->|"0xC0C1"| CbfcDetected
+    EthCheck -->|"0xC0C3"| SueDetected
+    EthCheck -->|"Other"| NoIpHeader
 
-    Vlan1Detected --> Vlan1Extract[Extract VLAN1<br/>DEI + PRI]
-    Vlan1Extract --> CheckVlan2{EtherType at<br/>VLAN1 offset}
+    Vlan1Detected --> Vlan1Extract["Extract VLAN1 DEI + PRI"]
+    Vlan1Extract --> CheckVlan2{"EtherType at VLAN1 offset"}
 
-    CheckVlan2 -->|0x8100 / 0x88a8| Vlan2Detected
-    CheckVlan2 -->|Other| VlanDone
+    CheckVlan2 -->|"0x8100 / 0x88a8"| Vlan2Detected
+    CheckVlan2 -->|"Other"| VlanDone
 
-    Vlan2Detected --> Vlan2Extract[Extract VLAN2<br/>DEI + PRI]
+    Vlan2Detected --> Vlan2Extract["Extract VLAN2 DEI + PRI"]
     Vlan2Extract --> CheckVlan3
 
-    CheckVlan3 -->|0x8100 / 0x88a8| Vlan3Detected
-    CheckVlan3 -->|Other| VlanDone
+    CheckVlan3 -->|"0x8100 / 0x88a8"| Vlan3Detected
+    CheckVlan3 -->|"Other"| VlanDone
 
-    Vlan3Detected --> Vlan3Extract[Extract VLAN3<br/>DEI + PRI]
+    Vlan3Detected --> Vlan3Extract["Extract VLAN3 DEI + PRI"]
     Vlan3Extract --> VlanDone
 
-    VlanDone --> TcamMatch{TCAM Match<br/>per-port entry}
+    VlanDone --> TcamMatch{"TCAM Match per-port entry"}
 
-    Ipv4Detected --> Ipv4Extract[Extract DSCP<br/>from IPv4 header]
-    Ipv6Extract[Extract DSCP<br/>from IPv6 header] --> DscpExtract
+    Ipv4Detected --> Ipv4Extract["Extract DSCP from IPv4 header"]
+    Ipv6Detected --> Ipv6Extract["Extract DSCP from IPv6 header"]
 
-    Ipv6Detected --> Ipv6Extract
+    Ipv4Extract --> DscpExtract
+    Ipv6Extract --> DscpExtract
 
-    OpaqueTagDetected --> OpaqueExtract[Extract OpaqueTag<br/>priority bits]
+    OpaqueTagDetected --> OpaqueExtract["Extract OpaqueTag priority"]
 
-    CbfcDetected --> CbfcExtract[Extract CBFC<br/>Priority bits[24:35]]
+    CbfcDetected --> CbfcExtract["Extract CBFC Priority"]
 
-    SueDetected --> SueExtract[Extract SUE<br/>Priority bits[56:60]]
+    SueDetected --> SueExtract["Extract SUE Priority"]
 
-    NoIpHeader --> UseDefault[Use Default<br/>Priority]
+    NoIpHeader --> UseDefault["Use Default Priority"]
 
     DscpExtract --> TcamMatch
     OpaqueExtract --> TcamMatch
     CbfcExtract --> TcamMatch
     SueExtract --> TcamMatch
 
-    TcamMatch -->|Hit| UseTcamPriority[Use TCAM<br/>Priority Override]
-    TcamMatch -->|Miss| PortConfigCheck{Check<br/>trustMode}
+    TcamMatch -->|"Hit"| UseTcamPriority["Use TCAM Priority Override"]
+    TcamMatch -->|"Miss"| PortConfigCheck{"Check trustMode"}
 
     UseTcamPriority --> Output([Output: 4b Priority])
 
-    PortConfigCheck -->|VLAN| VlanLutLookup[VLAN LUT<br/>Lookup]
-    PortConfigCheck -->|DSCP| DscpLutLookup[DSCP LUT<br/>Lookup]
-    PortConfigCheck -->|OpaqueTag| OpaqueLutLookup[OpaqueTag LUT<br/>Lookup]
-    PortConfigCheck -->|CBFC| UseCbfcPri[Use Configurable<br/>CBFC Priority]
-    PortConfigCheck -->|SUE| SueLutLookup[SUE LUT<br/>Lookup]
+    PortConfigCheck -->|"VLAN"| VlanLutLookup["VLAN LUT Lookup"]
+    PortConfigCheck -->|"DSCP"| DscpLutLookup["DSCP LUT Lookup"]
+    PortConfigCheck -->|"OpaqueTag"| OpaqueLutLookup["OpaqueTag LUT Lookup"]
+    PortConfigCheck -->|"CBFC"| UseCbfcPri["Use CBFC Priority"]
+    PortConfigCheck -->|"SUE"| SueLutLookup["SUE LUT Lookup"]
 
     VlanLutLookup --> Output
     DscpLutLookup --> Output
