@@ -54,9 +54,9 @@ The Pre-Parser module is located before the main Parser in the packet processing
 
 ### 2.2 Supported Header Layers
 
-The module supports parsing of the following header layers:
+The module supports the following header layer paths:
 
-**VLAN + IP path (up to 3 VLAN layers)**:
+**Path A: VLAN + IP (up to 3 VLAN layers)**:
 ```mermaid
 flowchart LR
     Ether --> VLAN1[VLAN Tag 1 4B]
@@ -67,67 +67,109 @@ flowchart LR
     VLAN3 --> IP
 ```
 
-**SUE path (max 1 VLAN + OpaqueTag)**:
+**Path B: VLAN + OpaqueTag + SUE (SUE after 1 VLAN + OpaqueTag)**:
 ```mermaid
 flowchart LR
     Ether --> VLAN1[VLAN Tag 1 4B]
-    VLAN1 --> SUE[SUE Protocol]
     VLAN1 --> OpaqueTag[OpaqueTag]
-    OpaqueTag --> SUE
+    OpaqueTag --> SUE[SUE Protocol]
     Ether --> SUE
+    VLAN1 --> SUE
 ```
 
-**CBFC path**:
+**Path C: 3-layer VLAN + OpaqueTag (OpaqueTag after 3 VLAN layers)**:
+```mermaid
+flowchart LR
+    Ether --> VLAN1[VLAN Tag 1 4B]
+    VLAN1 --> VLAN2[VLAN Tag 2 4B]
+    VLAN2 --> VLAN3[VLAN Tag 3 4B]
+    VLAN3 --> OpaqueTag[OpaqueTag]
+    OpaqueTag --> SUE
+```
+
+**Path D: CBFC (standalone)**:
 ```mermaid
 flowchart LR
     Ether --> CC[CBFC CC Update]
     style CC fill:#f96
 ```
 
-**OpaqueTag presence rules**:
-- In SUE path: OpaqueTag indicates the packet is SUE but priority comes from VLAN.PRI or DSCP
-- OpaqueTag does NOT provide its own priority - it only marks the packet type
-- Priority is determined by: VLAN.PRI (trust=VLAN) or DSCP (trust=DSCP) in SUE场景
+**Parsing Rules**:
+- VLAN layers (1-3): Each layer has TPID(0x8100/0x88a8) + TCI
+- OpaqueTag (0xFFFF): Marks SUE packet type, but does NOT provide priority
+- SUE path: OpaqueTag present, priority comes from VLAN.PRI (trust=VLAN) or DSCP (trust=DSCP)
+- IP path: Priority comes from DSCP via LUT
+- CBFC path: Priority is configurable per-port (cbfcPri), no LUT needed
 
 ### 2.3 Priority Extraction Flow
 
 ```mermaid
 flowchart TD
-    Start([Input: 32B Packet Data]) --> EthCheck{"EtherType"}
+    Start([Input: 32B Packet Data]) --> EthCheck{"EtherType at offset 12"}
 
     EthCheck -->|"0x8100/0x88a8"| Vlan1Detected
-    EthCheck -->|"0x0800"| Ipv4Detected
-    EthCheck -->|"0x86DD"| Ipv6Detected
+    EthCheck -->|"0x0800/0x86DD"| DirectIpDetected
     EthCheck -->|"0xC0C1"| CbfcDetected
-    EthCheck -->|"0xC0C3"| SueDetected
+    EthCheck -->|"0xC0C3"| DirectSueDetected
+    EthCheck -->|"0xFFFF"| DirectOpaqueTag
     EthCheck -->|"Other"| NoIpHeader
 
     Vlan1Detected --> Vlan1Extract["Extract VLAN1 DEI + PRI"]
-    Vlan1Extract --> CheckVlan2{"EtherType at VLAN1 offset"}
+    Vlan1Extract --> CheckVlan2{"EtherType at offset 16"}
 
     CheckVlan2 -->|"0x8100/0x88a8"| Vlan2Detected
-    CheckVlan2 -->|"Other"| VlanDone
+    CheckVlan2 -->|"0xFFFF"| OpaqueTagAfterVlan1["OpaqueTag after VLAN1"]
+    CheckVlan2 -->|"0x0800/0x86DD"| IpAfterVlan1["IP after VLAN1"]
+    CheckVlan2 -->|"0xC0C3"| SueAfterVlan1["SUE after VLAN1"]
+    CheckVlan2 -->|"Other"| Vlan1Done
 
     Vlan2Detected --> Vlan2Extract["Extract VLAN2 DEI + PRI"]
-    Vlan2Extract --> CheckVlan3
+    Vlan2Extract --> CheckVlan3{"EtherType at offset 20"}
 
     CheckVlan3 -->|"0x8100/0x88a8"| Vlan3Detected
-    CheckVlan3 -->|"Other"| VlanDone
+    CheckVlan3 -->|"0xFFFF"| OpaqueTagAfterVlan2["OpaqueTag after VLAN2"]
+    CheckVlan3 -->|"0x0800/0x86DD"| IpAfterVlan2["IP after VLAN2"]
+    CheckVlan3 -->|"Other"| Vlan2Done
 
     Vlan3Detected --> Vlan3Extract["Extract VLAN3 DEI + PRI"]
-    Vlan3Extract --> VlanDone
+    Vlan3Extract --> CheckAfterVlan3{"EtherType at offset 24"}
 
-    VlanDone --> TcamMatch{"TCAM Match per-port entry"}
+    CheckAfterVlan3 -->|"0xFFFF"| OpaqueTagAfterVlan3["OpaqueTag after 3 VLAN"]
+    CheckAfterVlan3 -->|"0x0800/0x86DD"| IpAfterVlan3["IP after 3 VLAN"]
+    CheckAfterVlan3 -->|"Other"| Vlan3Done
 
-    Ipv4Detected --> Ipv4Extract["Extract DSCP from IPv4 header"]
-    Ipv6Detected --> Ipv6Extract["Extract DSCP from IPv6 header"]
+    Vlan1Done --> TcamMatch
+    Vlan2Done --> TcamMatch
+    Vlan3Done --> TcamMatch
+    IpAfterVlan1 --> IpExtract["Extract DSCP"]
+    IpAfterVlan2 --> IpExtract
+    IpAfterVlan3 --> IpExtract
+    DirectIpDetected --> IpExtract
 
-    Ipv4Extract --> DscpExtract
-    Ipv6Extract --> DscpExtract
+    IpExtract --> DscpExtract
 
-    CbfcDetected --> CbfcExtract["Extract CBFC Priority"]
+    OpaqueTagAfterVlan1 --> OpaqueTagDetected1["OpaqueTag detected"]
+    OpaqueTagAfterVlan2 --> OpaqueTagDetected2["OpaqueTag detected"]
+    OpaqueTagAfterVlan3 --> OpaqueTagDetected3["OpaqueTag detected"]
+    DirectOpaqueTag --> OpaqueTagDirect["OpaqueTag directly"]
 
-    SueDetected --> SueExtract["SUE: Extract after VLAN or OpaqueTag"]
+    OpaqueTagDetected1 --> CheckSueAfterOpaque1{"EtherType at offset 18"}
+    OpaqueTagDetected2 --> CheckSueAfterOpaque2{"EtherType at offset 22"}
+    OpaqueTagDetected3 --> CheckSueAfterOpaque3{"EtherType at offset 26"}
+    OpaqueTagDirect --> CheckSueDirect{"EtherType at offset 14"}
+
+    CheckSueAfterOpaque1 -->|"0xC0C3"| SueAfterOpaque1["SUE after OpaqueTag"]
+    CheckSueAfterOpaque2 -->|"0xC0C3"| SueAfterOpaque2["SUE after OpaqueTag"]
+    CheckSueAfterOpaque3 -->|"0xC0C3"| SueAfterOpaque3["SUE after OpaqueTag"]
+    CheckSueDirect -->|"0xC0C3"| SueDirect["SUE directly"]
+
+    SueAfterOpaque1 --> SueExtract
+    SueAfterOpaque2 --> SueExtract
+    SueAfterOpaque3 --> SueExtract
+    SueDirect --> SueExtract
+    DirectSueDetected --> SueExtract
+
+    CbfcDetected --> CbfcExtract["CBFC Priority"]
 
     NoIpHeader --> UseDefault["Use Default Priority"]
 
