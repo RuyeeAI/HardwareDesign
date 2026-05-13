@@ -31,9 +31,8 @@
 
 3. **Priority Mapping Tables**
    - VLAN priority LUT: 16 ports × 16 priority levels = 128 entries
-   - DSCP priority LUT: 16 ports × 64 DSCP values = 512 entries
+   - DSCP priority LUT: 16 ports × 64 DSCP values = 512 entries (shared by IP DSCP and SUE PRI)
    - OpaqueTag priority LUT: 16 ports × 16 priority values = 256 entries
-   - SUE priority LUT: 16 ports × 32 values = 512 entries
    - CBFC priority: configurable per-port (no LUT)
 
 4. **TCAM-based Priority Override**
@@ -59,15 +58,23 @@ The Pre-Parser module is located before the main Parser in the packet processing
 The module supports parsing of the following header layers (up to 3 VLAN tags + 1 OpaqueTag + protocol-specific headers):
 
 ```mermaid
-flowchart LR
-    DMAC[DMAC<br/>48b] --> SMAC[SMAC<br/>48b]
-    SMAC --> EtherType[EtherType<br/>16b]
-    EtherType --> VLAN1[VLAN Tag 1<br/>4B]
+flowchart TD
+    Ether --> VLAN1[VLAN Tag 1<br/>4B]
+    Ether --> SUE[SUE Protocol]
+    Ether --> CC_UPDATE[CBFC CC Update]
     VLAN1 --> VLAN2[VLAN Tag 2<br/>4B]
-    VLAN2 --> VLAN3[VLAN Tag 3<br/>4B]
-    VLAN3 --> OpaqueTag[OpaqueTag<br/>4-8B]
-    OpaqueTag --> UEC[UEC Protocol<br/>CBFC/SUE]
-    EtherType --> IP[IP Header<br/>20-40B]
+    VLAN1 --> IP[IP Header]
+    VLAN1 --> SUE
+    VLAN1 --> OpaqueTag
+    VLAN2 --> OpaqueTag
+    VLAN2 --> IP
+    VLAN2 --> SUE
+
+    OpaqueTag --> IP
+    OpaqueTag --> SUE
+    Ether --> IP
+
+    style CC_UPDATE fill:#f96
 ```
 
 ### 2.3 Priority Extraction Flow
@@ -248,8 +255,9 @@ val opaquePriority = data(offset + 3, offset + 2)(7, 4)  // 4-bit PRI
 
 **Priority Extraction**:
 - Priority field is bits[56:60] from SUE payload start
-- 5-bit priority value needs to be mapped to 4-bit output via LUT
-- LUT Key: `{portId[3:0], suePriority[4:0]}` (8 bits → 256 entries)
+- 5-bit priority value needs to be mapped to 4-bit output via **shared DSCP LUT**
+- SUE PRI uses the same LUT as IP DSCP: `{portId[3:0], suePrio[4:0]}` (8 bits → 512 entries)
+- The 5-bit SUE priority is used as index into the LUT (same as 6-bit DSCP but only using lower 5 bits)
 
 ### 2.9 Extended TCAM Matching
 
@@ -297,16 +305,15 @@ graph TD
     PortConfigRegs[PortConfigRegs<br/>16 ports]
     TcamEntries[TcamEntries<br/>16 entries]
     VlanPriorityLut[VlanPriorityLut<br/>128 entries]
-    DscpPriorityLut[DscpPriorityLut<br/>512 entries]
+    DscpPriorityLut[DscpPriorityLut<br/>512 entries<br/>shared by IP DSCP and SUE]
     OpaquePriorityLut[OpaquePriorityLut<br/>256 entries]
-    SuePriorityLut[SuePriorityLut<br/>512 entries]
 
     TcamMatcher[TcamMatcher<br/>Extended Key]
     VlanExtractor[VlanExtractor<br/>max 3 layers]
     DscpExtractor[DscpExtractor]
     OpaqueExtractor[OpaqueExtractor<br/>4B/8B]
     CbfcExtractor[CbfcExtractor<br/>no LUT]
-    SueExtractor[SueExtractor]
+    SueExtractor[SueExtractor<br/>uses DSCP LUT]
     PrioritySelector[PrioritySelector]
 
     PreParserTop --> PreParserCore
@@ -315,7 +322,6 @@ graph TD
     PreParserTop --> VlanPriorityLut
     PreParserTop --> DscpPriorityLut
     PreParserTop --> OpaquePriorityLut
-    PreParserTop --> SuePriorityLut
 
     PreParserCore --> TcamMatcher
     PreParserCore --> VlanExtractor
@@ -432,14 +438,6 @@ class TcamEntry extends Bundle {
 
 **Size**: 256 entries × 4 bits
 **Key Format**: `{portId[3:0], opaquePrio[3:0]}` (7 bits)
-**Value Format**: 4-bit priority
-
-### 3.9 SuePriorityLut
-
-**Purpose**: Maps {portId, suePrio} to final priority.
-
-**Size**: 512 entries × 4 bits (5-bit priority → 4-bit output)
-**Key Format**: `{portId[3:0], suePrio[4:0]}` (8 bits)
 **Value Format**: 4-bit priority
 
 ---
@@ -800,3 +798,8 @@ def parseVlanLayers(data: UInt): VlanExtractResult = {
 
 - 2026-05-12: Initial version created
 - 2026-05-13: Added UEC CBFC CC Update and SUE PRI support, extended TCAM key to include EtherType
+
+```mermaid
+
+```
+
