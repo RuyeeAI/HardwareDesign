@@ -60,20 +60,14 @@ The module supports parsing of the following header layers (up to 3 VLAN tags + 
 
 ```mermaid
 flowchart LR
-    subgraph Packet_Headers
-        DMAC[DMAC<br/>48b]
-        SMAC[SMAC<br/>48b]
-        EtherType[EtherType<br/>16b]
-        VLAN1[VLAN Tag 1<br/>4B]
-        VLAN2[VLAN Tag 2<br/>4B]
-        VLAN3[VLAN Tag 3<br/>4B]
-        OpaqueTag[OpaqueTag<br/>4-8B]
-        UEC[UEC Protocol<br/>CBFC/SUE]
-        IP[IP Header<br/>20-40B]
-    end
-
-    DMAC --> SMAC --> EtherType --> VLAN1 --> VLAN2 --> VLAN3 --> OpaqueTag --> UEC
-    EtherType --> IP
+    DMAC[DMAC<br/>48b] --> SMAC[SMAC<br/>48b]
+    SMAC --> EtherType[EtherType<br/>16b]
+    EtherType --> VLAN1[VLAN Tag 1<br/>4B]
+    VLAN1 --> VLAN2[VLAN Tag 2<br/>4B]
+    VLAN2 --> VLAN3[VLAN Tag 3<br/>4B]
+    VLAN3 --> OpaqueTag[OpaqueTag<br/>4-8B]
+    OpaqueTag --> UEC[UEC Protocol<br/>CBFC/SUE]
+    EtherType --> IP[IP Header<br/>20-40B]
 ```
 
 ### 2.3 Priority Extraction Flow
@@ -139,7 +133,7 @@ flowchart TD
     VlanLutLookup --> Output
     DscpLutLookup --> Output
     OpaqueLutLookup --> Output
-    CbfcLutLookup --> Output
+    UseCbfcPri --> Output
     SueLutLookup --> Output
     UseDefault --> Output
 ```
@@ -151,13 +145,13 @@ The module supports parsing up to 3 layers of VLAN tags (QinQ/QinQinQ):
 ```mermaid
 flowchart LR
     subgraph VLAN_Stacking
-        direction TB
-        Outer["VLAN Outer Tag TPID=0x8100/0x88a8 TCI: PCP(3b) + DEI(1b) + VID(12b)"]
-        Inner["VLAN Inner Tag TPID=0x8100/0x88a8 TCI: PCP(3b) + DEI(1b) + VID(12b)"]
-        Third["VLAN Third Tag TPID=0x8100/0x88a8 TCI: PCP(3b) + DEI(1b) + VID(12b)"]
+        Outer["VLAN Outer Tag"]
+        Inner["VLAN Inner Tag"]
+        Third["VLAN Third Tag"]
     end
 
-    Outer --> Inner --> Third
+    Outer -->|"TPID=0x8100/0x88a8<br/>TCI: PCP+DEI+VID"| Inner
+    Inner -->|"TPID=0x8100/0x88a8<br/>TCI: PCP+DEI+VID"| Third
 ```
 
 **VLAN Detection Logic**:
