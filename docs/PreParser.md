@@ -17,15 +17,14 @@
    - Extract 4-bit priority from packet's first 32 bytes
    - Support VLAN-based priority (DEI + PRI from outermost tag)
    - Support IP-based priority (DSCP from IPv4/IPv6 header)
-   - Support OpaqueTag-based priority (4B/8B format, PRI directly used)
    - Support UEC CBFC CC Update priority (configurable per-port)
    - Support UEC SUE PRI priority (uses shared DSCP LUT)
+   - OpaqueTag does NOT provide priority - it only marks packet type; priority comes from VLAN.PRI or DSCP
 
 2. **Port-based Trust Mode**
    - Per-port configuration for trust source selection
    - Trust VLAN mode: prioritize VLAN tag information
    - Trust DSCP mode: prioritize IP DSCP information
-   - Trust OpaqueTag mode: prioritize OpaqueTag PRI
    - Trust CBFC mode: use configurable CBFC priority
    - Trust SUE mode: prioritize SUE PRI (via DSCP LUT)
 
@@ -33,7 +32,7 @@
    - VLAN priority LUT: 16 ports × 16 priority levels = 128 entries
    - DSCP priority LUT: 16 ports × 64 DSCP values = 512 entries (shared by IP DSCP and SUE PRI)
    - CBFC priority: configurable per-port (no LUT)
-   - OpaqueTag PRI: directly used (no LUT)
+   - OpaqueTag: no priority LUT (marks packet type only)
 
 4. **TCAM-based Priority Override**
    - Per-port TCAM entry for DMAC/SMAC/EtherType matching
@@ -55,27 +54,40 @@ The Pre-Parser module is located before the main Parser in the packet processing
 
 ### 2.2 Supported Header Layers
 
-The module supports parsing of the following header layers (up to 3 VLAN tags + 1 OpaqueTag + protocol-specific headers):
+The module supports parsing of the following header layers:
 
+**VLAN + IP path (up to 3 VLAN layers)**:
 ```mermaid
-flowchart TD
+flowchart LR
     Ether --> VLAN1[VLAN Tag 1 4B]
-    Ether --> SUE[SUE Protocol]
-    Ether --> CC_UPDATE[CBFC CC Update]
     VLAN1 --> VLAN2[VLAN Tag 2 4B]
+    VLAN2 --> VLAN3[VLAN Tag 3 4B]
     VLAN1 --> IP[IP Header]
-    VLAN1 --> SUE
-    VLAN1 --> OpaqueTag
-    VLAN2 --> OpaqueTag
     VLAN2 --> IP
-    VLAN2 -.-> SUE
-
-    OpaqueTag --> IP
-    OpaqueTag --> SUE
-    Ether --> IP
-
-    style CC_UPDATE fill:#f96
+    VLAN3 --> IP
 ```
+
+**SUE path (max 1 VLAN + OpaqueTag)**:
+```mermaid
+flowchart LR
+    Ether --> VLAN1[VLAN Tag 1 4B]
+    VLAN1 --> SUE[SUE Protocol]
+    VLAN1 --> OpaqueTag[OpaqueTag]
+    OpaqueTag --> SUE
+    Ether --> SUE
+```
+
+**CBFC path**:
+```mermaid
+flowchart LR
+    Ether --> CC[CBFC CC Update]
+    style CC fill:#f96
+```
+
+**OpaqueTag presence rules**:
+- In SUE path: OpaqueTag indicates the packet is SUE but priority comes from VLAN.PRI or DSCP
+- OpaqueTag does NOT provide its own priority - it only marks the packet type
+- Priority is determined by: VLAN.PRI (trust=VLAN) or DSCP (trust=DSCP) in SUE场景
 
 ### 2.3 Priority Extraction Flow
 
@@ -86,7 +98,6 @@ flowchart TD
     EthCheck -->|"0x8100/0x88a8"| Vlan1Detected
     EthCheck -->|"0x0800"| Ipv4Detected
     EthCheck -->|"0x86DD"| Ipv6Detected
-    EthCheck -->|"0xFFFF"| OpaqueTagDetected
     EthCheck -->|"0xC0C1"| CbfcDetected
     EthCheck -->|"0xC0C3"| SueDetected
     EthCheck -->|"Other"| NoIpHeader
@@ -105,6 +116,41 @@ flowchart TD
 
     Vlan3Detected --> Vlan3Extract["Extract VLAN3 DEI + PRI"]
     Vlan3Extract --> VlanDone
+
+    VlanDone --> TcamMatch{"TCAM Match per-port entry"}
+
+    Ipv4Detected --> Ipv4Extract["Extract DSCP from IPv4 header"]
+    Ipv6Detected --> Ipv6Extract["Extract DSCP from IPv6 header"]
+
+    Ipv4Extract --> DscpExtract
+    Ipv6Extract --> DscpExtract
+
+    CbfcDetected --> CbfcExtract["Extract CBFC Priority"]
+
+    SueDetected --> SueExtract["SUE: Extract after VLAN or OpaqueTag"]
+
+    NoIpHeader --> UseDefault["Use Default Priority"]
+
+    DscpExtract --> TcamMatch
+    CbfcExtract --> TcamMatch
+    SueExtract --> TcamMatch
+
+    TcamMatch -->|"Hit"| UseTcamPriority["Use TCAM Priority Override"]
+    TcamMatch -->|"Miss"| PortConfigCheck{"Check trustMode"}
+
+    UseTcamPriority --> Output([Output: 4b Priority])
+
+    PortConfigCheck -->|"VLAN"| VlanLutLookup["VLAN LUT Lookup"]
+    PortConfigCheck -->|"DSCP"| DscpLutLookup["DSCP LUT Lookup"]
+    PortConfigCheck -->|"CBFC"| UseCbfcPri["Use CBFC Priority"]
+    PortConfigCheck -->|"SUE"| SueLutLookup["SUE uses DSCP LUT"]
+
+    VlanLutLookup --> Output
+    DscpLutLookup --> Output
+    UseCbfcPri --> Output
+    SueLutLookup --> Output
+    UseDefault --> Output
+```
 
     VlanDone --> TcamMatch{"TCAM Match per-port entry"}
 
@@ -173,22 +219,7 @@ val vid = data(43, 32)     // VLAN ID (12 bits)
 val vlanPrio = Cat(dei, pri)  // 4-bit: {DEI, PRI[2:0]}
 ```
 
-### 2.5 OpaqueTag Parsing
-
-OpaqueTag is a custom tag that can appear after VLAN tags and before IP header:
-
-**OpaqueTag Detection**:
-- EtherType = 0xFFFF indicates OpaqueTag
-- OpaqueTag structure (4 bytes or 8 bytes):
-  - bits[3:0]: Format/type (0x1 = custom priority)
-  - bits[7:4]: Priority/PRI value (4-bit, no DEI in OpaqueTag)
-  - bits[31:8] or bits[63:32]: Reserved/custom data
-
-**Priority Handling**:
-- OpaqueTag PRI is extracted directly (4-bit) without LUT mapping
-- When trust mode = OpaqueTag, the extracted PRI is used directly as priority
-
-### 2.6 DSCP Priority Extraction
+### 2.5 DSCP Priority Extraction
 
 - **EtherType Detection**: Check bits[15:0] for 0x0800 (IPv4) or 0x86DD (IPv6)
 - **IPv4 Header Detection**: At offset 14 bytes from packet start
@@ -348,10 +379,12 @@ val out_valid = Output(Bool())
 **Configuration Registers** (per port):
 | Register | Width | Access | Description |
 |----------|-------|--------|-------------|
-| trustMode | 3 | RW | 000=VLAN, 001=DSCP, 010=OpaqueTag, 011=CBFC, 100=SUE |
+| trustMode | 2 | RW | 00=VLAN, 01=DSCP, 10=CBFC, 11=SUE |
 | tcamEnable | 1 | RW | Enable TCAM override |
 | defaultPri | 4 | RW | Default priority |
 | cbfcPri | 4 | RW | Configurable priority for CBFC CC Update packets |
+
+**Note**: OpaqueTag (0xFFFF) marks SUE packet type but does not provide priority. Priority is derived from VLAN.PRI or DSCP based on trustMode.
 
 ### 3.3 PreParserCore
 
@@ -364,10 +397,12 @@ val out_valid = Output(Bool())
 1. **TcamMatcher**: Performs DMAC/SMAC/EtherType mask matching against per-port TCAM entry
 2. **VlanExtractor**: Detects up to 3 VLAN tags and extracts DEI+PRI from outermost
 3. **DscpExtractor**: Detects IPv4/IPv6 and extracts DSCP
-4. **OpaqueExtractor**: Detects OpaqueTag (4B/8B) and extracts PRI directly (no LUT)
+4. **OpaqueTagDetector**: Detects OpaqueTag (0xFFFF) for SUE packet type marking
 5. **CbfcExtractor**: Detects CBFC (0xC0C1) - uses configurable priority from port config
 6. **SueExtractor**: Detects SUE (0xC0C3) - uses shared DSCP LUT
-7. **PrioritySelector**: Multiplexes between TCAM, VLAN, DSCP, OpaqueTag, CBFC, and SUE paths
+7. **PrioritySelector**: Multiplexes between TCAM, VLAN, DSCP, CBFC, and SUE paths
+
+**Note**: OpaqueTag does not provide priority - it only marks packet type (SUE). Priority is derived from VLAN.PRI or DSCP.
 
 ### 3.4 PortConfigRegs
 
@@ -376,7 +411,7 @@ val out_valid = Output(Bool())
 **Structure**:
 ```scala
 class PortConfig extends Bundle {
-  val trustMode = UInt(3.W)    // 000=VLAN, 001=DSCP, 010=OpaqueTag, 011=CBFC, 100=SUE
+  val trustMode = UInt(2.W)    // 00=VLAN, 01=DSCP, 10=CBFC, 11=SUE
   val tcamEnable = Bool()
   val defaultPri = UInt(4.W)
   val cbfcPri = UInt(4.W)      // Configurable priority for CBFC packets
@@ -442,7 +477,7 @@ case class PreParserConfig(
 #### PortConfig
 ```scala
 class PortConfig extends GenBundle {
-  val trustMode = UInt(3.W)      // 000=VLAN, 001=DSCP, 010=OpaqueTag, 011=CBFC, 100=SUE
+  val trustMode = UInt(2.W)      // 00=VLAN, 01=DSCP, 10=CBFC, 11=SUE
   val tcamEnable = Bool()
   val defaultPri = UInt(4.W)
   val cbfcPri = UInt(4.W)        // Configurable priority for CBFC packets
@@ -500,15 +535,16 @@ class VlanExtractResult extends Bundle {
 }
 ```
 
-#### OpaqueExtractResult
+#### OpaqueTagResult
 ```scala
-class OpaqueExtractResult extends Bundle {
-  val isValid = Bool()
-  val format = UInt(4.W)
-  val length = UInt(2.W)         // 0=4B, 1=8B (in 4B units)
-  val priority = UInt(4.W)      // PRI directly extracted (no LUT)
+class OpaqueTagResult extends Bundle {
+  val isPresent = Bool()           // OpaqueTag detected (EtherType=0xFFFF)
+  val format = UInt(4.W)           // Format/type for reference
+  val length = UInt(2.W)           // 0=4B, 1=8B (in 4B units)
 }
 ```
+
+**Note**: OpaqueTag does not provide priority. It only marks the packet as SUE type. Priority comes from VLAN.PRI or DSCP.
 
 #### CbfcExtractResult
 ```scala
@@ -718,9 +754,11 @@ Byte[17-18] [4:0] SUE Priority[4:0]
 |--------|-----------|---------------------|----------|
 | VLAN | 0x8100/0x88a8 | DEI + PRI from outermost (4-bit) | VlanPriorityLut |
 | IP DSCP | 0x0800/0x86DD | DSCP from header (6-bit) | DscpPriorityLut (shared) |
-| OpaqueTag | 0xFFFF | PRI directly (4-bit) | None (direct) |
-| CBFC | 0xC0C1 | Configurable per-port | None (register) |
-| SUE | 0xC0C3 | PRI from header (5-bit) | DscpPriorityLut (shared) |
+| OpaqueTag | 0xFFFF | No priority - marks SUE packet type only | None |
+| CBFC | 0xC0C1 | Configurable per-port (cbfcPri) | None (register) |
+| SUE | 0xC0C3 | PRI from header (5-bit) via VLAN or DSCP | DscpPriorityLut (shared) |
+
+**Note**: In SUE scenarios, priority is derived from VLAN.PRI (trust=VLAN) or DSCP (trust=DSCP), not from OpaqueTag. OpaqueTag only marks that the packet is a SUE type.
 
 ---
 
