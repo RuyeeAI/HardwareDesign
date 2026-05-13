@@ -579,12 +579,11 @@ class PriorityResult extends Bundle {
 
 | Condition | Detection | Handling |
 |-----------|-----------|----------|
-| No VLAN, OpaqueTag, IP, CBFC, or SUE header | EtherType not recognized | Use default priority |
-| VLAN priority extraction but trust mode is DSCP | trustMode=001 | Skip VLAN, use DSCP path |
-| DSCP extraction but trust mode is VLAN | trustMode=000 | Skip DSCP, use VLAN path |
-| OpaqueTag extraction but trust mode is VLAN | trustMode=000 | Skip OpaqueTag, use VLAN path |
-| CBFC extraction but trust mode is SUE | trustMode=100 | Skip CBFC, use SUE path |
-| SUE extraction but trust mode is CBFC | trustMode=011 | Skip SUE, use CBFC path |
+| No VLAN, IP, CBFC, or SUE header | EtherType not recognized | Use default priority |
+| VLAN priority extraction but trust mode is DSCP | trustMode=01 | Skip VLAN, use DSCP path |
+| DSCP extraction but trust mode is VLAN | trustMode=00 | Skip DSCP, use VLAN path |
+| CBFC extraction but trust mode is SUE | trustMode=11 | Skip CBFC, use SUE path |
+| SUE extraction but trust mode is CBFC | trustMode=10 | Skip SUE, use CBFC path |
 | TCAM entry invalid | valid=false | Skip TCAM match |
 | TCAM match fails | No mask match | Use normal priority path |
 | VLAN count exceeds max (3) | vlanCount > 3 | Stop parsing, use partial result |
@@ -620,7 +619,7 @@ object PreParserErrorCode extends ChiselEnum {
 
 | Register | Reset Value | Description |
 |----------|-------------|-------------|
-| trustMode | 0 | Default to trust VLAN (000) |
+| trustMode | 0 | Default to trust VLAN (00) |
 | tcamEnable | false | TCAM disabled by default |
 | defaultPri | 0 | Priority 0 as default |
 | cbfcPri | 0 | CBFC priority 0 as default |
@@ -650,7 +649,7 @@ object PreParserErrorCode extends ChiselEnum {
 ### 6.4 Default Behavior
 
 When uninitialized:
-- All ports trust VLAN (trustMode=000)
+- All ports trust VLAN (trustMode=00)
 - TCAM disabled
 - Default priority = 0
 - LUT tables contain pass-through values
