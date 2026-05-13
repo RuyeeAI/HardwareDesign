@@ -15,25 +15,25 @@
 
 1. **Packet Priority Extraction**
    - Extract 4-bit priority from packet's first 32 bytes
-   - Support VLAN-based priority (DEI + PRI)
-   - Support IP-based priority (DSCP)
-   - Support OpaqueTag-based priority (4B/8B format, PRI only)
-   - Support UEC CBFC CC Update priority (12-bit → 4-bit)
-   - Support UEC SUE PRI priority (5-bit → 4-bit)
+   - Support VLAN-based priority (DEI + PRI from outermost tag)
+   - Support IP-based priority (DSCP from IPv4/IPv6 header)
+   - Support OpaqueTag-based priority (4B/8B format, PRI directly used)
+   - Support UEC CBFC CC Update priority (configurable per-port)
+   - Support UEC SUE PRI priority (uses shared DSCP LUT)
 
 2. **Port-based Trust Mode**
    - Per-port configuration for trust source selection
    - Trust VLAN mode: prioritize VLAN tag information
    - Trust DSCP mode: prioritize IP DSCP information
-   - Trust OpaqueTag mode: prioritize OpaqueTag information
-   - Trust CBFC mode: prioritize CBFC CC Update priority
-   - Trust SUE mode: prioritize SUE PRI priority
+   - Trust OpaqueTag mode: prioritize OpaqueTag PRI
+   - Trust CBFC mode: use configurable CBFC priority
+   - Trust SUE mode: prioritize SUE PRI (via DSCP LUT)
 
 3. **Priority Mapping Tables**
    - VLAN priority LUT: 16 ports × 16 priority levels = 128 entries
    - DSCP priority LUT: 16 ports × 64 DSCP values = 512 entries (shared by IP DSCP and SUE PRI)
-   - OpaqueTag priority LUT: 16 ports × 16 priority values = 256 entries
    - CBFC priority: configurable per-port (no LUT)
+   - OpaqueTag PRI: directly used (no LUT)
 
 4. **TCAM-based Priority Override**
    - Per-port TCAM entry for DMAC/SMAC/EtherType matching
@@ -59,16 +59,16 @@ The module supports parsing of the following header layers (up to 3 VLAN tags + 
 
 ```mermaid
 flowchart TD
-    Ether --> VLAN1[VLAN Tag 1<br/>4B]
+    Ether --> VLAN1[VLAN Tag 1 4B]
     Ether --> SUE[SUE Protocol]
     Ether --> CC_UPDATE[CBFC CC Update]
-    VLAN1 --> VLAN2[VLAN Tag 2<br/>4B]
+    VLAN1 --> VLAN2[VLAN Tag 2 4B]
     VLAN1 --> IP[IP Header]
     VLAN1 --> SUE
     VLAN1 --> OpaqueTag
     VLAN2 --> OpaqueTag
     VLAN2 --> IP
-    -- VLAN2 --> SUE
+    VLAN2 -.-> SUE
 
     OpaqueTag --> IP
     OpaqueTag --> SUE
@@ -83,7 +83,7 @@ flowchart TD
 flowchart TD
     Start([Input: 32B Packet Data]) --> EthCheck{"EtherType"}
 
-    EthCheck -->|"0x8100 / 0x88a8"| Vlan1Detected
+    EthCheck -->|"0x8100/0x88a8"| Vlan1Detected
     EthCheck -->|"0x0800"| Ipv4Detected
     EthCheck -->|"0x86DD"| Ipv6Detected
     EthCheck -->|"0xFFFF"| OpaqueTagDetected
@@ -94,13 +94,13 @@ flowchart TD
     Vlan1Detected --> Vlan1Extract["Extract VLAN1 DEI + PRI"]
     Vlan1Extract --> CheckVlan2{"EtherType at VLAN1 offset"}
 
-    CheckVlan2 -->|"0x8100 / 0x88a8"| Vlan2Detected
+    CheckVlan2 -->|"0x8100/0x88a8"| Vlan2Detected
     CheckVlan2 -->|"Other"| VlanDone
 
     Vlan2Detected --> Vlan2Extract["Extract VLAN2 DEI + PRI"]
     Vlan2Extract --> CheckVlan3
 
-    CheckVlan3 -->|"0x8100 / 0x88a8"| Vlan3Detected
+    CheckVlan3 -->|"0x8100/0x88a8"| Vlan3Detected
     CheckVlan3 -->|"Other"| VlanDone
 
     Vlan3Detected --> Vlan3Extract["Extract VLAN3 DEI + PRI"]
@@ -114,7 +114,7 @@ flowchart TD
     Ipv4Extract --> DscpExtract
     Ipv6Extract --> DscpExtract
 
-    OpaqueTagDetected --> OpaqueExtract["Extract OpaqueTag priority"]
+    OpaqueTagDetected --> OpaqueExtract["Extract OpaqueTag PRI directly"]
 
     CbfcDetected --> CbfcExtract["Extract CBFC Priority"]
 
@@ -134,13 +134,13 @@ flowchart TD
 
     PortConfigCheck -->|"VLAN"| VlanLutLookup["VLAN LUT Lookup"]
     PortConfigCheck -->|"DSCP"| DscpLutLookup["DSCP LUT Lookup"]
-    PortConfigCheck -->|"OpaqueTag"| OpaqueLutLookup["OpaqueTag LUT Lookup"]
+    PortConfigCheck -->|"OpaqueTag"| OpaqueDirect["OpaqueTag PRI Direct"]
     PortConfigCheck -->|"CBFC"| UseCbfcPri["Use CBFC Priority"]
-    PortConfigCheck -->|"SUE"| SueLutLookup["SUE LUT Lookup"]
+    PortConfigCheck -->|"SUE"| SueLutLookup["SUE uses DSCP LUT"]
 
     VlanLutLookup --> Output
     DscpLutLookup --> Output
-    OpaqueLutLookup --> Output
+    OpaqueDirect --> Output
     UseCbfcPri --> Output
     SueLutLookup --> Output
     UseDefault --> Output
@@ -152,14 +152,8 @@ The module supports parsing up to 3 layers of VLAN tags (QinQ/QinQinQ):
 
 ```mermaid
 flowchart LR
-    subgraph VLAN_Stacking
-        Outer["VLAN Outer Tag"]
-        Inner["VLAN Inner Tag"]
-        Third["VLAN Third Tag"]
-    end
-
-    Outer -->|"TPID=0x8100/0x88a8<br/>TCI: PCP+DEI+VID"| Inner
-    Inner -->|"TPID=0x8100/0x88a8<br/>TCI: PCP+DEI+VID"| Third
+    Outer["VLAN Outer Tag"] -->|"TPID=0x8100/0x88a8<br/>TCI: PCP+DEI+VID"| Inner["VLAN Inner Tag"]
+    Inner -->|"TPID=0x8100/0x88a8<br/>TCI: PCP+DEI+VID"| Third["VLAN Third Tag"]
 ```
 
 **VLAN Detection Logic**:
@@ -168,13 +162,14 @@ flowchart LR
 - Each VLAN tag is 4 bytes: TPID (2B) + TCI (2B)
 - After extracting a VLAN tag, check the next 2 bytes for additional VLAN tags
 - Maximum 3 VLAN tags can be parsed within 32 bytes
+- Priority is extracted from the **outermost** (first) VLAN tag only
 
 **Priority Extraction from VLAN**:
 ```scala
 // TCI (Tag Control Information) at bits[47:32] after TPID
 val pri = data(47, 45)    // PCP/Priority (3 bits)
 val dei = data(44)        // DEI (1 bit)
-val vid = data(43, 32)    // VLAN ID (12 bits)
+val vid = data(43, 32)     // VLAN ID (12 bits)
 val vlanPrio = Cat(dei, pri)  // 4-bit: {DEI, PRI[2:0]}
 ```
 
@@ -189,12 +184,9 @@ OpaqueTag is a custom tag that can appear after VLAN tags and before IP header:
   - bits[7:4]: Priority/PRI value (4-bit, no DEI in OpaqueTag)
   - bits[31:8] or bits[63:32]: Reserved/custom data
 
-**Priority Extraction from OpaqueTag**:
-```scala
-// OpaqueTag at offset after VLAN layers
-val opaqueFormat = data(offset + 3, offset + 2)(3, 0)
-val opaquePriority = data(offset + 3, offset + 2)(7, 4)  // 4-bit PRI
-```
+**Priority Handling**:
+- OpaqueTag PRI is extracted directly (4-bit) without LUT mapping
+- When trust mode = OpaqueTag, the extracted PRI is used directly as priority
 
 ### 2.6 DSCP Priority Extraction
 
@@ -224,9 +216,8 @@ val opaquePriority = data(offset + 3, offset + 2)(7, 4)  // 4-bit PRI
 | Sequence_Number | 7 | 16 |
 | protocol演算法 | 8 | 16 |
 
-**Priority Extraction**:
+**Priority Handling**:
 - Priority field is bits[24:35] from CBFC payload start (after EtherType+Version)
-- 12-bit priority value indicates urgency level of CC update
 - When CBFC message is detected and trust mode = CBFC, use **configurable per-port priority** directly
 - No LUT mapping needed - priority is assigned from `cbfcPri` register
 
@@ -254,11 +245,10 @@ val opaquePriority = data(offset + 3, offset + 2)(7, 4)  // 4-bit PRI
 | reserved | 5.125 | 8 |
 | TSPEC | 5.625 | 48 |
 
-**Priority Extraction**:
+**Priority Handling**:
 - Priority field is bits[56:60] from SUE payload start
-- 5-bit priority value needs to be mapped to 4-bit output via **shared DSCP LUT**
-- SUE PRI uses the same LUT as IP DSCP: `{portId[3:0], suePrio[4:0]}` (8 bits → 512 entries)
-- The 5-bit SUE priority is used as index into the LUT (same as 6-bit DSCP but only using lower 5 bits)
+- 5-bit priority value uses the **shared DSCP LUT**
+- SUE PRI and IP DSCP share the same LUT: `{portId[3:0], pri[4:0]}` (8 bits → 512 entries)
 
 ### 2.9 Extended TCAM Matching
 
@@ -303,18 +293,17 @@ val tcam_hit = entry.valid && dmacMatch && smacMatch && etherTypeMatch
 graph TD
     PreParserTop[PreParserTop]
     PreParserCore[PreParserCore]
-    PortConfigRegs[PortConfigRegs<br/>16 ports]
-    TcamEntries[TcamEntries<br/>16 entries]
-    VlanPriorityLut[VlanPriorityLut<br/>128 entries]
-    DscpPriorityLut[DscpPriorityLut<br/>512 entries<br/>shared by IP DSCP and SUE]
-    OpaquePriorityLut[OpaquePriorityLut<br/>256 entries]
+    PortConfigRegs[PortConfigRegs 16 ports]
+    TcamEntries[TcamEntries 16 entries]
+    VlanPriorityLut[VlanPriorityLut 128 entries]
+    DscpPriorityLut[DscpPriorityLut 512 entries shared by IP DSCP and SUE]
 
-    TcamMatcher[TcamMatcher<br/>Extended Key]
-    VlanExtractor[VlanExtractor<br/>max 3 layers]
+    TcamMatcher[TcamMatcher Extended Key]
+    VlanExtractor[VlanExtractor max 3 layers]
     DscpExtractor[DscpExtractor]
-    OpaqueExtractor[OpaqueExtractor<br/>4B/8B]
-    CbfcExtractor[CbfcExtractor<br/>no LUT]
-    SueExtractor[SueExtractor<br/>uses DSCP LUT]
+    OpaqueExtractor[OpaqueExtractor 4B/8B direct PRI]
+    CbfcExtractor[CbfcExtractor no LUT]
+    SueExtractor[SueExtractor uses DSCP LUT]
     PrioritySelector[PrioritySelector]
 
     PreParserTop --> PreParserCore
@@ -322,7 +311,6 @@ graph TD
     PreParserTop --> TcamEntries
     PreParserTop --> VlanPriorityLut
     PreParserTop --> DscpPriorityLut
-    PreParserTop --> OpaquePriorityLut
 
     PreParserCore --> TcamMatcher
     PreParserCore --> VlanExtractor
@@ -360,7 +348,7 @@ val out_valid = Output(Bool())
 **Configuration Registers** (per port):
 | Register | Width | Access | Description |
 |----------|-------|--------|-------------|
-| trustMode | 3 | RW | 000=VLAN, 001=DSCP, 010=OpaqueTag, 011=CBFC, 100=SUE, 101-111=Reserved |
+| trustMode | 3 | RW | 000=VLAN, 001=DSCP, 010=OpaqueTag, 011=CBFC, 100=SUE |
 | tcamEnable | 1 | RW | Enable TCAM override |
 | defaultPri | 4 | RW | Default priority |
 | cbfcPri | 4 | RW | Configurable priority for CBFC CC Update packets |
@@ -376,9 +364,9 @@ val out_valid = Output(Bool())
 1. **TcamMatcher**: Performs DMAC/SMAC/EtherType mask matching against per-port TCAM entry
 2. **VlanExtractor**: Detects up to 3 VLAN tags and extracts DEI+PRI from outermost
 3. **DscpExtractor**: Detects IPv4/IPv6 and extracts DSCP
-4. **OpaqueExtractor**: Detects OpaqueTag (4B/8B) and extracts PRI (no DEI)
-5. **CbfcExtractor**: Detects CBFC (0xC0C1) and extracts 12-bit priority
-6. **SueExtractor**: Detects SUE (0xC0C3) and extracts 5-bit priority
+4. **OpaqueExtractor**: Detects OpaqueTag (4B/8B) and extracts PRI directly (no LUT)
+5. **CbfcExtractor**: Detects CBFC (0xC0C1) - uses configurable priority from port config
+6. **SueExtractor**: Detects SUE (0xC0C3) - uses shared DSCP LUT
 7. **PrioritySelector**: Multiplexes between TCAM, VLAN, DSCP, OpaqueTag, CBFC, and SUE paths
 
 ### 3.4 PortConfigRegs
@@ -427,18 +415,12 @@ class TcamEntry extends Bundle {
 
 ### 3.7 DscpPriorityLut
 
-**Purpose**: Maps {portId, dscp} to final priority.
+**Purpose**: Maps {portId, pri} to final priority. Shared by IP DSCP and SUE PRI.
 
 **Size**: 512 entries × 4 bits
-**Key Format**: `{portId[3:0], dscp[5:0]}` (9 bits)
-**Value Format**: 4-bit priority
-
-### 3.8 OpaquePriorityLut
-
-**Purpose**: Maps {portId, opaquePrio} to final priority.
-
-**Size**: 256 entries × 4 bits
-**Key Format**: `{portId[3:0], opaquePrio[3:0]}` (7 bits)
+**Key Format**:
+- For IP DSCP: `{portId[3:0], dscp[5:0]}` (9 bits)
+- For SUE PRI: `{portId[3:0], suePrio[4:0]}` (8 bits)
 **Value Format**: 4-bit priority
 
 ---
@@ -524,7 +506,7 @@ class OpaqueExtractResult extends Bundle {
   val isValid = Bool()
   val format = UInt(4.W)
   val length = UInt(2.W)         // 0=4B, 1=8B (in 4B units)
-  val priority = UInt(4.W)        // PRI (no DEI in OpaqueTag)
+  val priority = UInt(4.W)      // PRI directly extracted (no LUT)
 }
 ```
 
@@ -570,7 +552,6 @@ class PriorityResult extends Bundle {
 | TCAM entry invalid | valid=false | Skip TCAM match |
 | TCAM match fails | No mask match | Use normal priority path |
 | VLAN count exceeds max (3) | vlanCount > 3 | Stop parsing, use partial result |
-| Lookup table miss | Index out of range | Use default priority |
 | OpaqueTag format invalid | format != 0x1 | Skip OpaqueTag, treat as no opaque |
 | CBFC version invalid | version != expected | Skip CBFC, treat as no cbfc |
 | SUE version invalid | version != expected | Skip SUE, treat as no sue |
@@ -581,16 +562,11 @@ class PriorityResult extends Bundle {
 object PreParserErrorCode extends ChiselEnum {
   val None = 0.U(4.W)
   val NoVlanNoIpNoProtocol = 1.U(4.W)    // No VLAN/IP/Protocol found, using default
-  val VlanTcamMiss = 2.U(4.W)            // VLAN path selected but no LUT match
-  val DscpTcamMiss = 3.U(4.W)            // DSCP path selected but no LUT match
-  val OpaqueTcamMiss = 4.U(4.W)          // OpaqueTag path selected but no LUT match
-  val CbfcTcamMiss = 5.U(4.W)            // CBFC path selected but no LUT match
-  val SueTcamMiss = 6.U(4.W)             // SUE path selected but no LUT match
-  val InvalidEtherType = 7.U(4.W)
-  val VlanOverflow = 8.U(4.W)            // More than 3 VLAN layers
-  val InvalidOpaqueFormat = 9.U(4.W)     // OpaqueTag format not supported
-  val InvalidCbfcVersion = 10.U(4.W)     // CBFC version not supported
-  val InvalidSueVersion = 11.U(4.W)      // SUE version not supported
+  val InvalidEtherType = 2.U(4.W)
+  val VlanOverflow = 3.U(4.W)              // More than 3 VLAN layers
+  val InvalidOpaqueFormat = 4.U(4.W)      // OpaqueTag format not supported
+  val InvalidCbfcVersion = 5.U(4.W)      // CBFC version not supported
+  val InvalidSueVersion = 6.U(4.W)       // SUE version not supported
 }
 ```
 
@@ -621,19 +597,8 @@ object PreParserErrorCode extends ChiselEnum {
 - May be overwritten by software with custom mappings
 
 #### DSCP Priority LUT
-- Initialize with pass-through mapping: output = dscp[5:2] (4-bit from 6-bit DSCP)
-- May be overwritten by software with custom mappings
-
-#### OpaqueTag Priority LUT
-- Initialize with pass-through mapping: output = opaquePriority
-- May be overwritten by software with custom mappings
-
-#### CBFC Priority
-- No LUT needed - configurable per-port via `cbfcPri` register
-- When CBFC packet detected and trust mode = CBFC, use `portConfig.cbfcPri` directly
-
-#### SUE Priority LUT
-- Initialize with pass-through mapping: output = suePrio (5-bit to 4-bit, can truncate)
+- Initialize with pass-through mapping: output = pri[5:2] for DSCP, pri for SUE
+- Shared by IP DSCP and SUE PRI
 - May be overwritten by software with custom mappings
 
 ### 6.3 Configuration Sequence
@@ -747,60 +712,19 @@ Byte[17-18] [4:0] SUE Priority[4:0]
 
 ---
 
-## Appendix B: VLAN Layer Parsing Algorithm
+## Appendix B: Priority Source Summary
 
-```scala
-def parseVlanLayers(data: UInt): VlanExtractResult = {
-  var offset = 12.U  // Start after DMAC+SMAC
-  var vlanCount = 0.U(2.W)
-  var vlanPrio = 0.U(4.W)
-  var vlanVid = 0.U(12.W)
-  var hasOpaqueTag = false.B
-  var hasIp = false.B
-  var hasCbfc = false.B
-  var hasSue = false.B
-
-  // Check up to 3 VLAN layers
-  for (layer <- 0 until 3) {
-    val etherType = data(offset + 1, offset)
-
-    when(etherType === 0x8100.U || etherType === 0x88a8.U) {
-      // VLAN tag detected
-      val tci = data(offset + 5, offset + 4)  // TCI after TPID
-      vlanPrio := Cat(tci(4), tci(2,0))       // DEI + PCP
-      vlanVid := tci(15, 3)
-      vlanCount := vlanCount + 1.U
-      offset := offset + 4.U  // Move past VLAN tag
-    }.otherwise {
-      // No more VLAN tags
-      hasOpaqueTag := (etherType === 0xFFFF.U)
-      hasCbfc := (etherType === 0xC0C1.U)
-      hasSue := (etherType === 0xC0C3.U)
-      hasIp := (etherType === 0x0800.U || etherType === 0x86DD.U)
-    }
-  }
-
-  VlanExtractResult(vlanCount, vlanPrio, vlanVid, hasOpaqueTag, hasIp, hasCbfc, hasSue, 0.U)
-}
-```
+| Source | EtherType | Priority Extraction | LUT Used |
+|--------|-----------|---------------------|----------|
+| VLAN | 0x8100/0x88a8 | DEI + PRI from outermost (4-bit) | VlanPriorityLut |
+| IP DSCP | 0x0800/0x86DD | DSCP from header (6-bit) | DscpPriorityLut (shared) |
+| OpaqueTag | 0xFFFF | PRI directly (4-bit) | None (direct) |
+| CBFC | 0xC0C1 | Configurable per-port | None (register) |
+| SUE | 0xC0C3 | PRI from header (5-bit) | DscpPriorityLut (shared) |
 
 ---
 
-## Appendix C: UEC Protocol EtherType Summary
-
-| Protocol | EtherType | Priority Field | Priority Size |
-|----------|-----------|----------------|---------------|
-| CBFC CC Update | 0xC0C1 | bits[24:35] | 12 bits |
-| SUE PRI | 0xC0C3 | bits[56:60] | 5 bits |
-
----
-
-## Appendix D: Document History
+## Appendix C: Document History
 
 - 2026-05-12: Initial version created
 - 2026-05-13: Added UEC CBFC CC Update and SUE PRI support, extended TCAM key to include EtherType
-
-```mermaid
-
-```
-
