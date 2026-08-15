@@ -40,7 +40,7 @@ class PreParserTop(
   val portConfigs = Reg(Vec(config.portCount, new PortConfig))
   for (i <- 0 until config.portCount) {
     when(reset.asBool === false.B && io.csr_write_en) {
-      val baseAddr = i * 4.U
+      val baseAddr = (i * 4).U
       when(io.csr_write_addr === baseAddr) {
         portConfigs(i).trustMode := io.csr_write_data(1, 0)
         portConfigs(i).tcamEnable := io.csr_write_data(2).asBool
@@ -54,7 +54,7 @@ class PreParserTop(
   val tcamEntries = Reg(Vec(config.tcamDepth, new TcamEntry))
   for (i <- 0 until config.tcamDepth) {
     when(reset.asBool === false.B && io.csr_write_en) {
-      val baseAddr = 0x80.U + (i * 8.U)  // TCAM entries at 0x80-0xFF
+      val baseAddr = 0x80.U + (i * 8).U  // TCAM entries at 0x80-0xFF
       when(io.csr_write_addr === baseAddr) {
         tcamEntries(i).dmacMask := io.csr_write_data(47, 0)
       }.elsewhen(io.csr_write_addr === baseAddr + 1.U) {
@@ -85,7 +85,7 @@ class PreParserTop(
       }
     }.elsewhen(reset.asBool) {
       // Initialize with pass-through: priority = vlanPrio (lower 4 bits of index)
-      vlanPrioLut(i) := i(3, 0).U(4.W)
+      vlanPrioLut(i) := (i & 0xF).U(4.W)
     }
   }
 
@@ -102,7 +102,7 @@ class PreParserTop(
       }
     }.elsewhen(reset.asBool) {
       // Initialize with pass-through: priority = dscp[5:2]
-      dscpPrioLut(i) := i(8, 6).U(4.W)
+      dscpPrioLut(i) := ((i >> 6) & 0x3).U(4.W)
     }
   }
 
@@ -119,7 +119,7 @@ class PreParserTop(
       }
     }.elsewhen(reset.asBool) {
       // Initialize with pass-through: priority = opaquePrio
-      opaquePrioLut(i) := i(3, 0).U(4.W)
+      opaquePrioLut(i) := (i & 0xF).U(4.W)
     }
   }
 

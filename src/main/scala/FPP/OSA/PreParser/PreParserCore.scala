@@ -34,10 +34,10 @@ class PreParserCore(
   // ========== VLAN Extraction ==========
 
   def extractVlanPrio(data: UInt, offset: UInt): (Bool, UInt, UInt) = {
-    val tpid = data(offset + 1, offset)  // TPID at offset
+    val tpid = (data >> offset)(1, 0)  // TPID at offset
     val isVlan = (tpid === PreParserConstants.ETH_VLAN) || (tpid === PreParserConstants.ETH_VLAN911)
 
-    val tci = data(offset + 5, offset + 4)  // TCI after TPID (4 bytes offset)
+    val tci = (data >> (offset + 4.U))(1, 0)  // TCI after TPID (4 bytes offset)
     val pri = tci(2, 0)                     // PCP/Priority (3 bits)
     val dei = tci(4)                         // DEI (1 bit)
     val vid = tci(15, 3)                     // VLAN ID (12 bits)
@@ -93,7 +93,7 @@ class PreParserCore(
       3.U -> 24.U
     )
   )
-  val etherTypeAfterVlan = io.in_data(nextEtherTypeOffset + 1, nextEtherTypeOffset)
+  val etherTypeAfterVlan = (io.in_data >> nextEtherTypeOffset)(1, 0)
 
   vlanResult.hasOpaqueTag := etherTypeAfterVlan === PreParserConstants.ETH_OPAQUE
   vlanResult.hasIp := (etherTypeAfterVlan === PreParserConstants.ETH_IPV4) ||
@@ -112,8 +112,8 @@ class PreParserCore(
     val result = Wire(new OpaqueExtractResult)
 
     // OpaqueTag starts at offset (EtherType=0xFFFF at offset, so OpaqueTag data at offset+2)
-    val format = data(offset + 3, offset + 2)(3, 0)  // bits[27:24] = format[3:0]
-    val pri = data(offset + 3, offset + 2)(7, 4)     // bits[31:28] = pri[3:0]
+    val format = (data >> (offset + 2.U))(1, 0)(3, 0)  // bits[27:24] = format[3:0]
+    val pri = (data >> (offset + 2.U))(1, 0)(7, 4)     // bits[31:28] = pri[3:0]
 
     // For 4B format: no additional length check needed
     // For 8B format: we just indicate length, actual parsing of extra data not needed for priority
@@ -142,13 +142,13 @@ class PreParserCore(
   def extractDscpFromIpv4(data: UInt, offset: UInt): UInt = {
     // IPv4 header: offset points to version/IHL byte
     // DSCP is at bits[47:42] relative to offset (after version/IHL and TOS bytes)
-    val dscp = data(offset + 3, offset + 2)(5, 0)  // TOS byte lower 6 bits
+    val dscp = (data >> (offset + 2.U))(1, 0)(5, 0)  // TOS byte lower 6 bits
     dscp
   }
 
   def extractDscpFromIpv6(data: UInt, offset: UInt): UInt = {
     // IPv6: offset points to version byte, DSCP is at offset+1 in traffic class field
-    val tc = data(offset + 9, offset + 8)  // traffic class bytes
+    val tc = (data >> (offset + 8.U))(1, 0)  // traffic class bytes
     val dscp = tc(5, 0)  // lower 6 bits
     dscp
   }

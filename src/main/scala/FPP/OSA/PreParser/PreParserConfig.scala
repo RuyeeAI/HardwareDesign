@@ -1,6 +1,7 @@
 package FPP.OSA.PreParser
 
 import BaseCbb.GenBundle
+import chisel3._
 
 // ============= PreParser Configuration =============
 
