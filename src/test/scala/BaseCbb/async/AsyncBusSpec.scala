@@ -18,3 +18,4 @@ class AsyncBusSpec extends AnyFlatSpec with Matchers {
   // Note: This module implements handshake-based clock domain crossing
   // Multi-clock simulation requires Verilator
 }
+// re-trigger macro expansion (AsyncBus now implemented)

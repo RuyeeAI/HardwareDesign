@@ -2,7 +2,7 @@ package BaseCbb.async
 
 import chisel3._
 import chisel3.util._
-import BaseCbb.utils.AsyncResetSynchronizerShiftReg
+import BaseCbb.utils.cdc.AsyncResetSynchronizerShiftReg
 
 // 1. 两位同步器 (2-flop Synchronizer)
 // 用于将单bit信号从快时钟域同步到慢时钟域，降低亚稳态概率

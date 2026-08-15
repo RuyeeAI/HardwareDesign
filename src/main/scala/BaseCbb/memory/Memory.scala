@@ -138,24 +138,17 @@ class TpMemoryPort(val addrWidth:Int,val dataWidth:Int) extends GenBundle {
 }
 
 /**
- * SpMemoryLgcPort — 单口 SRAM 逻辑端口（含 ECC 不可纠正错误上报）
+ * SpMemoryLgcPort — 单口 SRAM 逻辑端口（= SpMemoryPort + ECC 不可纠正错误上报）
+ * 合并自 SpMemoryPort：仅追加 uecErr 字段（基类统一为 GenBundle）
  */
-class SpMemoryLgcPort(val addrWidth: Int, val dataWidth: Int) extends Bundle {
-  val we     = Input(Bool())
-  val re     = Input(Bool())
-  val addr   = Input(UInt(addrWidth.W))
-  val wdata  = Input(UInt(dataWidth.W))
-  val rdata  = Output(UInt(dataWidth.W))
+class SpMemoryLgcPort(addrWidth: Int, dataWidth: Int) extends SpMemoryPort(addrWidth, dataWidth) {
   val uecErr = Output(Bool())
 }
 
-class TpMemoryLgcPort(val addrWidth: Int, val dataWidth: Int) extends Bundle {
-  val we     = Input(Bool())
-  val re     = Input(Bool())
-  val waddr  = Input(UInt(addrWidth.W))
-  val raddr  = Input(UInt(addrWidth.W))
-  val wdata  = Input(UInt(dataWidth.W))
-  val rdata  = Output(UInt(dataWidth.W))
+/**
+ * TpMemoryLgcPort — 双口 SRAM 逻辑端口（= TpMemoryPort + ECC 不可纠正错误上报）
+ */
+class TpMemoryLgcPort(addrWidth: Int, dataWidth: Int) extends TpMemoryPort(addrWidth, dataWidth) {
   val uecErr = Output(Bool())
 }
 

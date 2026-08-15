@@ -40,14 +40,14 @@ class BitmapCacheMem(
 
   val M = n / cacheSize
 
-  // Cache: stores one row (cacheSize bits)
+  // Cache: stores one row (cacheSize bits)；语义 1 = 可用（与 BitmapKernel 统一）
   val cacheData  = Reg(Vec(cacheSize, Bool()))
   val cacheTag   = Reg(UInt(log2M.W))
   val cacheValid = RegInit(false.B)
 
-  // Current row free count & first free column
-  val cacheFreeCnt     = PopCount(cacheData.map(!_))
-  val firstFreeInCache = PriorityEncoder(cacheData.map(!_))
+  // Current row free count & first free column（1 = 可用）
+  val cacheFreeCnt     = BitmapKernel.freeCount(cacheData.asUInt)
+  val firstFreeInCache = BitmapKernel.firstFree(cacheData.asUInt)
 
   // State machine
   val sIdle :: sRead :: sWrite :: sInit :: Nil = Enum(4)
@@ -92,10 +92,10 @@ class BitmapCacheMem(
     // ======================================================================
     is(sIdle) {
       // Cache hit: allocate from cached row combinatorially (1 cycle)
-      when(cacheValid && cacheFreeCnt > 0.U) {
+      when(cacheValid && BitmapKernel.hasFree(cacheData.asUInt)) {
         val col = firstFreeInCache
         val ptr = Cat(cacheTag, col)
-        cacheData(col) := true.B
+        cacheData(col) := false.B   // 占用 = 清 0
         io.alloc_ptr   := ptr
         io.alloc_valid := true.B
       }
@@ -112,7 +112,7 @@ class BitmapCacheMem(
       // Free: hit in cache → update cache; miss → go to sRead to write SRAM
       when(io.free_req) {
         when(ptrInCache) {
-          cacheData(ptr_col) := false.B
+          cacheData(ptr_col) := true.B   // 释放 = 置 1
         }.otherwise {
           req_row  := ptr_row
           req_col  := ptr_col
@@ -151,13 +151,13 @@ class BitmapCacheMem(
           cacheTag   := req_row
           cacheValid := true.B
 
-          val rowFreeCnt = PopCount(row_data.asBools.map(!_))
-          val rowHasFree = rowFreeCnt =/= 0.U
+          val rowFreeCnt = BitmapKernel.freeCount(row_data)
+          val rowHasFree = BitmapKernel.hasFree(row_data)
 
           when(rowHasFree) {
             // Found a non-full row — allocate from it
-            val alloc_col = PriorityEncoder(row_data.asBools.map(!_))
-            cacheData(alloc_col) := true.B
+            val alloc_col = BitmapKernel.firstFree(row_data)
+            cacheData(alloc_col) := false.B   // 占用 = 清 0
             io.alloc_ptr   := Cat(req_row, alloc_col)
             io.alloc_valid := true.B
             state := sIdle
@@ -174,7 +174,7 @@ class BitmapCacheMem(
         when(req_type === 1.U) {
           val new_row = Wire(Vec(cacheSize, Bool()))
           new_row := VecInit(row_data.asBools)
-          new_row(req_col) := false.B
+          new_row(req_col) := true.B   // 释放 = 置 1
 
           io.mem.we    := true.B
           io.mem.waddr := req_row
@@ -200,9 +200,7 @@ class BitmapCacheMem(
     is(sInit) {
       io.mem.we    := true.B
       io.mem.waddr := initRow
-      io.mem.wdata := 0.U
-
-      initRow := initRow + 1.U
+      io.mem.wdata := ((BigInt(1) << cacheSize) - 1).U  // 全 1 = 全可用
       when(initRow === (M - 1).U) {
         cacheValid := false.B
         state := sIdle
@@ -210,9 +208,10 @@ class BitmapCacheMem(
     }
   }
 
-  // Status outputs
-  io.full  := cacheValid && cacheData.asUInt.andR
-  io.empty := !cacheValid || (cacheValid && cacheFreeCnt === 0.U)
+  // Status outputs —— 缓存行级近似（全局空/满需扫描全部行，此处以缓存行状态表达）
+  // 语义与 Bitmap 一致：empty = 全可用（无已分配），full = 全占（无可用）
+  io.full  := cacheValid && BitmapKernel.isFull(cacheData.asUInt)
+  io.empty := cacheValid && BitmapKernel.isEmpty(cacheData.asUInt)
   io.freeCnt := Mux(cacheValid, cacheFreeCnt, cacheSize.U) +
                 Mux(cacheValid, (M - 1).U * cacheSize.U, 0.U)
 

@@ -8,13 +8,15 @@
 HardwareDesign/
 ├── build.sbt                                      # sbt 构建配置
 ├── README.md                                      # 本说明文件
-├── RegCbb_v2/                                     # ★ 新版寄存器文件框架（独立工程，见其 README）
-│   ├── src/main/scala/BaseCbb/RegCbb_v2/          #   定义 DSL + RTL + 生成器 + Demo
-│   ├── docs/寄存器编写指导.md                       #   ★ 寄存器编写与外围逻辑连接指导
-│   └── generated/RegCbb_v2/                       #   一键生成的 SV/JSON/C/Markdown/视图
+├── docs/寄存器编写指导.md                          # ★ RegCbb_v2 寄存器编写与外围逻辑连接指导
 └── src/
     └── main/
         └── scala/
+            ├── BaseCbb/RegCbb_v2/                  # ★ 新版寄存器文件框架（DSL + RTL + 生成器 + Demo）
+            │   ├── dsl/                            #   定义 DSL（字段级 + RegBundle）与地址分配
+            │   ├── hw/                             #   RegFileTop / AXI 包装器 / RegView
+            │   ├── gen/                            #   JSON / C 头 / Markdown / HTML 生成器
+            │   └── demo/                           #   UART Demo（EmitAll 一键生成到 generated/RegCbb_v2/）
             ├── basic/
             │   └── BasicCells.scala               # 基础门级单元
             ├── arithmetic/

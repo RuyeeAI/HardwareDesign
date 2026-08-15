@@ -14,3 +14,4 @@ class AsyncPulseSpec extends AnyFlatSpec with Matchers {
   // Note: This module uses crossing between two clock domains (clk_a and clk_b)
   // Multi-clock simulation requires Verilator
 }
+// re-trigger macro expansion (AsyncPulse/AsyncBus now implemented)

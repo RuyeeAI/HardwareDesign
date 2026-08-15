@@ -22,61 +22,91 @@ class Register(width: Int = 32) extends Module {
   }
 }
 
-// 1读1写寄存器堆
-class RegFile1R1W(dataWidth: Int = 32, addrWidth: Int = 5) extends Module {
+// 参数化寄存器堆（nRead 读口 + nWrite 写口，Mem 实现）
+class RegFile(
+  nRead: Int = 1,
+  nWrite: Int = 1,
+  dataWidth: Int = 32,
+  addrWidth: Int = 5
+) extends Module {
+  require(nRead >= 1 && nWrite >= 1, "RegFile requires at least 1 read and 1 write port")
   val depth = 1 << addrWidth
   val io = IO(new Bundle {
+    val clk    = Input(Clock())
+    // Write ports
+    val wen    = Vec(nWrite, Input(Bool()))
+    val waddr  = Vec(nWrite, Input(UInt(addrWidth.W)))
+    val wdata  = Vec(nWrite, Input(UInt(dataWidth.W)))
+    // Read ports
+    val ren    = Vec(nRead, Input(Bool()))
+    val raddr  = Vec(nRead, Input(UInt(addrWidth.W)))
+    val rdata  = Vec(nRead, Output(UInt(dataWidth.W)))
+  })
+
+  val mem = Mem(depth, UInt(dataWidth.W))
+
+  for (i <- 0 until nRead) {
+    io.rdata(i) := 0.U
+    when (io.ren(i)) {
+      io.rdata(i) := mem.read(io.raddr(i))
+    }
+  }
+
+  withClock(io.clk) {
+    for (i <- 0 until nWrite) {
+      when (io.wen(i)) {
+        mem.write(io.waddr(i), io.wdata(i))
+      }
+    }
+  }
+}
+
+// 1读1写寄存器堆（兼容包装，内部复用参数化 RegFile）
+class RegFile1R1W(dataWidth: Int = 32, addrWidth: Int = 5) extends Module {
+  val io = IO(new Bundle {
     val clk   = Input(Clock())
-    // Write port
     val wen   = Input(Bool())
     val waddr = Input(UInt(addrWidth.W))
     val wdata = Input(UInt(dataWidth.W))
-    // Read port
     val ren   = Input(Bool())
     val raddr = Input(UInt(addrWidth.W))
     val rdata = Output(UInt(dataWidth.W))
   })
 
-  val mem = Mem(depth, UInt(dataWidth.W))
-
-  io.rdata := 0.U
-  when (io.ren) {
-    io.rdata := mem.read(io.raddr)
-  }
-
-  withClock(io.clk) {
-    when (io.wen) {
-      mem.write(io.waddr, io.wdata)
-    }
-  }
+  val rf = Module(new RegFile(1, 1, dataWidth, addrWidth))
+  rf.io.clk := io.clk
+  rf.io.wen(0) := io.wen
+  rf.io.waddr(0) := io.waddr
+  rf.io.wdata(0) := io.wdata
+  rf.io.ren(0) := io.ren
+  rf.io.raddr(0) := io.raddr
+  io.rdata := rf.io.rdata(0)
 }
 
-// 2读1写寄存器堆
+// 2读1写寄存器堆（兼容包装）
 class RegFile2R1W(dataWidth: Int = 32, addrWidth: Int = 5) extends Module {
-  val depth = 1 << addrWidth
   val io = IO(new Bundle {
     val clk    = Input(Clock())
-    // Write port
     val wen    = Input(Bool())
     val waddr  = Input(UInt(addrWidth.W))
     val wdata  = Input(UInt(dataWidth.W))
-    // Read ports
     val raddr1 = Input(UInt(addrWidth.W))
     val raddr2 = Input(UInt(addrWidth.W))
     val rdata1 = Output(UInt(dataWidth.W))
     val rdata2 = Output(UInt(dataWidth.W))
   })
 
-  val mem = Mem(depth, UInt(dataWidth.W))
-
-  io.rdata1 := mem.read(io.raddr1)
-  io.rdata2 := mem.read(io.raddr2)
-
-  withClock(io.clk) {
-    when (io.wen) {
-      mem.write(io.waddr, io.wdata)
-    }
-  }
+  val rf = Module(new RegFile(2, 1, dataWidth, addrWidth))
+  rf.io.clk := io.clk
+  rf.io.wen(0) := io.wen
+  rf.io.waddr(0) := io.waddr
+  rf.io.wdata(0) := io.wdata
+  rf.io.ren(0) := true.B
+  rf.io.ren(1) := true.B
+  rf.io.raddr(0) := io.raddr1
+  rf.io.raddr(1) := io.raddr2
+  io.rdata1 := rf.io.rdata(0)
+  io.rdata2 := rf.io.rdata(1)
 }
 
 // 二进制加法计数器
@@ -115,7 +145,7 @@ class ModNCounter(mod: Int = 100) extends Module {
   })
 
   withClockAndReset(io.clk, io.rst_n) {
-    val (cnt, wrap) = BaseCbb.utils.ZCounter(io.en, mod)
+    val (cnt, wrap) = BaseCbb.utils.math.ZCounter(io.en, mod)
     io.count := cnt
     io.overflow := wrap
   }

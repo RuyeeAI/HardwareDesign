@@ -23,3 +23,4 @@ class SyncSpec extends AnyFlatSpec with Matchers {
   // Note: Sync uses BlackBox SYNC_FF which requires external Verilog implementation
   // Full multi-clock simulation requires Verilator
 }
+// re-trigger macro expansion (Sync/SYNC_FF/AsyncRstSync now implemented)

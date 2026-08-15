@@ -4,7 +4,7 @@ package BaseCbb.async
 
 import chisel3._
 import chisel3.{withClockAndReset, withReset}
-import BaseCbb.utils.AsyncResetSynchronizerShiftReg
+import BaseCbb.utils.cdc.AsyncResetSynchronizerShiftReg
 
 /** PSD test mode bundle for DFT scan chain support. */
 class PSDTestMode extends Bundle {

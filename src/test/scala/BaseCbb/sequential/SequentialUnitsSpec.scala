@@ -35,6 +35,6 @@ class SequentialUnitsSpec extends AnyFlatSpec with ChiselScalatestTester with Ma
     assertCompiles("new ModNCounter(10)")
     assertCompiles("new ClkDiv2")
     assertCompiles("new ClkDiv(10)")
-    assertCompiles("new FsmTemplate(4)")
+    assertCompiles("new FsmTemplate")
   }
 }

@@ -1,7 +1,7 @@
 package BaseCbb.arbiter
 
 import BaseCbb._
-import BaseCbb.utils.Seq2Vec
+import BaseCbb.utils.io.Seq2Vec
 import chisel3._
 
 

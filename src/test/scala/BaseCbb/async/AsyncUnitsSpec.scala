@@ -38,3 +38,4 @@ class AsyncUnitsSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
     assertCompiles("new GrayCounter(4)")
   }
 }
+// re-trigger macro expansion (AsyncRstSync now implemented)

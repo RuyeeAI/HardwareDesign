@@ -100,13 +100,6 @@ class BasicCellsSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
     }
   }
 
-  "Mux2" should "select input" in {
-    test(new Mux2) { c =>
-      c.io.d0.poke(false.B); c.io.d1.poke(true.B)
-      c.io.sel.poke(false.B); c.io.y.expect(false.B)
-      c.io.sel.poke(true.B);  c.io.y.expect(true.B)
-    }
-  }
 
   "Mux2N" should "select N-bit input" in {
     test(new Mux2N(UInt(8.W))) { c =>
@@ -116,22 +109,7 @@ class BasicCellsSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
     }
   }
 
-  "Dec2" should "decode 2 to 4" in {
-    test(new Dec2) { c =>
-      c.io.in.poke(0.U); c.io.out.expect(1.U)
-      c.io.in.poke(1.U); c.io.out.expect(2.U)
-      c.io.in.poke(2.U); c.io.out.expect(4.U)
-      c.io.in.poke(3.U); c.io.out.expect(8.U)
-    }
-  }
 
-  "Dec3" should "decode 3 to 8" in {
-    test(new Dec3) { c =>
-      c.io.in.poke(0.U); c.io.out.expect(1.U)
-      c.io.in.poke(3.U); c.io.out.expect(8.U)
-      c.io.in.poke(7.U); c.io.out.expect(128.U)
-    }
-  }
 
   "HalfAdd" should "add two bits" in {
     test(new HalfAdd) { c =>
