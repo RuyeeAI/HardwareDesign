@@ -103,7 +103,7 @@ class UpCounter(width: Int = 8) extends Module {
   }
 }
 
-// 模N计数器
+// 模N计数器（内部复用 utils.ZCounter 计数逻辑单元，消除重复实现）
 class ModNCounter(mod: Int = 100) extends Module {
   val width = log2Ceil(mod)
   val io = IO(new Bundle {
@@ -115,19 +115,9 @@ class ModNCounter(mod: Int = 100) extends Module {
   })
 
   withClockAndReset(io.clk, io.rst_n) {
-    val cnt = Reg(UInt(width.W))
-    io.overflow := (cnt === (mod - 1).U) && io.en
-
-    when (!io.rst_n.asBool) {
-      cnt := 0.U
-    } .elsewhen (io.en) {
-      when (io.overflow) {
-        cnt := 0.U
-      } .otherwise {
-        cnt := cnt + 1.U
-      }
-    }
+    val (cnt, wrap) = BaseCbb.utils.ZCounter(io.en, mod)
     io.count := cnt
+    io.overflow := wrap
   }
 }
 
@@ -224,8 +214,10 @@ object FsmStates {
   val sIDLE :: sBUSY :: sDONE :: Nil = Enum(3)
 }
 
-class FsmTemplate(stateNum: Int = 4) extends Module {
-  val stateWidth = log2Ceil(stateNum)
+class FsmTemplate extends Module {
+  // 三段式 FSM 模板：固定三态（sIDLE/sBUSY/sDONE）
+  // （修复：原 stateNum 参数与写死的三态逻辑矛盾，已删除）
+  val stateWidth = 2
   val io = IO(new Bundle {
     val clk         = Input(Clock())
     val rst_n       = Input(AsyncReset())

@@ -14,7 +14,9 @@ class Bitmap(RscNum:Int) extends GenModule{
     val full    = Output(Bool())
   })
 
-  val bitmap = RegInit(0.U(log2Ceil(RscNum).W))
+  // 位图：1 = 空闲，0 = 已分配；初始全 1（全空闲）
+  // （修复：原实现位宽误用 log2Ceil(RscNum)，且初始全 0 导致"上电即满"）
+  val bitmap = RegInit(((BigInt(1) << RscNum) - 1).U(RscNum.W))
 
   val bitmap_set   = io.ret_vld << io.ret_ptr
   io.req_ptr := PriorityEncoder(bitmap)

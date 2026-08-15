@@ -114,18 +114,7 @@ class Xnor2 extends Module {
   io.y := !(io.a ^ io.b)
 }
 
-// 12. 二选一多路选择器 (2-to-1 MUX)
-class Mux2 extends Module {
-  val io = IO(new Bundle {
-    val d0 = Input(Bool())
-    val d1 = Input(Bool())
-    val sel = Input(Bool())
-    val y = Output(Bool())
-  })
-  io.y := Mux(io.sel, io.d1, io.d0)
-}
-
-// 13. N位宽二选一多路选择器
+// 13. N位宽二选一多路选择器（Mux2 已被 Mux2N[Bool] 覆盖，删除）
 class Mux2N[T <: Data](gen: T) extends Module {
   val io = IO(new Bundle {
     val d0 = Input(gen)
@@ -134,24 +123,6 @@ class Mux2N[T <: Data](gen: T) extends Module {
     val y = Output(gen)
   })
   io.y := Mux(io.sel, io.d1, io.d0)
-}
-
-// 14. 2-4译码器
-class Dec2 extends Module {
-  val io = IO(new Bundle {
-    val in = Input(UInt(2.W))
-    val out = Output(UInt(4.W))
-  })
-  io.out := 1.U << io.in
-}
-
-// 15. 3-8译码器
-class Dec3 extends Module {
-  val io = IO(new Bundle {
-    val in = Input(UInt(3.W))
-    val out = Output(UInt(8.W))
-  })
-  io.out := 1.U << io.in
 }
 
 // 16. D锁存器 (D Latch)

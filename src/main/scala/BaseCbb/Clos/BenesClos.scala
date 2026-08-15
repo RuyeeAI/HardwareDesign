@@ -71,7 +71,6 @@ object Benes{
     }else {
       val upperHalf = math.floor(length.toDouble / 2).toInt
       val lowerHalf = math.ceil(length.toDouble / 2).toInt
-      println("Upper "+upperHalf +" Lower "+lowerHalf)
 //      val firstStageCfg  = SubVec(s, st = 0, size = upperHalf)
       val lastStageCfg   = SubVec(s, st = s.length - upperHalf, upperHalf)
       val firstStageOut  = Wire(Vec(upperHalf,Vec(2,in.head.cloneType)))
@@ -102,7 +101,6 @@ object Benes{
       }else{
         upperClosOutput := upperClosInput
       }
-      println(upperHalf+CfgSize(upperHalf),CfgSize(lowerHalf))
       val lowerClosCfg = SubVec(s,st = upperHalf+CfgSize(upperHalf),CfgSize(lowerHalf))
       lowerClosOutput := ClosNxN(lowerClosCfg,lowerClosInput)
       ClosNxNOut

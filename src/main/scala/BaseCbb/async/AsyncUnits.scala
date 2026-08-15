@@ -2,9 +2,12 @@ package BaseCbb.async
 
 import chisel3._
 import chisel3.util._
+import BaseCbb.utils.AsyncResetSynchronizerShiftReg
 
 // 1. 两位同步器 (2-flop Synchronizer)
 // 用于将单bit信号从快时钟域同步到慢时钟域，降低亚稳态概率
+// 内部复用 utils 的 CDC 主原语（desiredName 编码复位类型/深度，可被后端识别替换），
+// 避免两套同步链实现漂移。
 class Sync2(depth: Int = 2) extends Module {
   require(depth >= 2, "synchronizer depth must be >= 2")
   val io = IO(new Bundle {
@@ -15,12 +18,7 @@ class Sync2(depth: Int = 2) extends Module {
   })
 
   withClockAndReset(io.clk, io.rst_n) {
-    val syncStages = Reg(Vec(depth, Bool()))
-    syncStages(0) := io.din
-    for (i <- 1 until depth) {
-      syncStages(i) := syncStages(i-1)
-    }
-    io.dout := syncStages(depth-1)
+    io.dout := AsyncResetSynchronizerShiftReg(io.din, depth, 0)
   }
 }
 

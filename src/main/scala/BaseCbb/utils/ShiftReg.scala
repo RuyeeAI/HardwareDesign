@@ -3,6 +3,7 @@
 package BaseCbb.utils
 
 import chisel3._
+import chisel3.util.RegEnable
 
 // Similar to the Chisel ShiftRegister but allows the user to suggest a
 // name to the registers that get instantiated, and
@@ -16,6 +17,20 @@ object ShiftRegInit {
       name.foreach { na => r.suggestName(s"${na}_${i}") }
       r
     }
+  }
+
+  /** 带使能版（吞并原 utils.ShiftRegEn）：每级 RegEnable，使能信号逐级打拍传播 */
+  def apply[T <: Data](in: T, n: Int, init: T, en: Bool, name: Option[String]): T = {
+    val (o, _) = (0 until n).foldRight((in, en)) {
+      case (i, next) => {
+        val r = RegEnable(next._1, init, next._2)
+        name.foreach { na => r.suggestName(s"${na}_${i}") }
+        val e = RegNext(next._2)
+        name.foreach { na => e.suggestName(s"${na}_en_${i}") }
+        (r, e)
+      }
+    }
+    o
   }
 }
 

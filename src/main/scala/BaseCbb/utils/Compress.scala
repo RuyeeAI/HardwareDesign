@@ -23,15 +23,8 @@ class Compress[T <: Data](gen: T, val n: Int) extends Module {
   // Convert valid bits to integers for prefix sum
   private val validInts = io.valid.asBools.map(v => Mux(v, 1.U(countWidth.W), 0.U(countWidth.W)))
 
-  // Tree-based parallel prefix sum (inclusive scan), O(log N) stages
-  private var psum = validInts
-  private var step = 1
-  while (step < n) {
-    psum = (0 until n).map { i =>
-      if (i >= step) psum(i) + psum(i - step) else psum(i)
-    }
-    step *= 2
-  }
+  // 复用通用前缀和骨架（Dense：O(NlogN) 面积、O(logN) 深度），消除内联拷贝
+  private val psum: Vector[UInt] = DensePrefixSum(validInts)((a: UInt, b: UInt) => a + b)
 
   // Route each valid input to its destination (zero-based index)
   private val default = 0.U.asTypeOf(gen)
@@ -81,14 +74,8 @@ class Scatter[T <: Data](gen: T, val n: Int) extends Module {
 
   private val maskInts = io.mask.asBools.map(m => Mux(m, 1.U(countWidth.W), 0.U(countWidth.W)))
 
-  private var psum = maskInts
-  private var step = 1
-  while (step < n) {
-    psum = (0 until n).map { i =>
-      if (i >= step) psum(i) + psum(i - step) else psum(i)
-    }
-    step *= 2
-  }
+  // 复用通用前缀和骨架（Dense），消除内联拷贝
+  private val psum: Vector[UInt] = DensePrefixSum(maskInts)((a: UInt, b: UInt) => a + b)
 
   // For each output position, route the corresponding packed input or zero
   private val default = 0.U.asTypeOf(gen)

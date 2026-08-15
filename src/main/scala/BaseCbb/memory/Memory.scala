@@ -109,7 +109,7 @@ case class Memory(
 
   def toMap: Map[String, Any] = {
     var map: Map[String, Any] = Map()
-    map += ("Name" -> Name)
+    map += ("Name" -> name)  // 修复：原为未定义的大写 Name
     map += ("AccessType" -> memoryType)
     map += ("Width" -> dataWidth)
     map += ("Depth" -> depth)

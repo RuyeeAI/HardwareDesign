@@ -126,8 +126,8 @@ class Comparator(width: Int = 32) extends Module {
   io.lt := io.a < io.b
 }
 
-// N位乘法器 (行为级)
-class Multipler(widthA: Int = 16, widthB: Int = 16) extends Module {
+// N位乘法器 (行为级) —— 修正拼写（原 Multipler）
+class Multiplier(widthA: Int = 16, widthB: Int = 16) extends Module {
   val outWidth = widthA + widthB
   val io = IO(new Bundle {
     val a       = Input(UInt(widthA.W))
@@ -136,6 +136,10 @@ class Multipler(widthA: Int = 16, widthB: Int = 16) extends Module {
   })
   io.product := io.a * io.b
 }
+
+/** 兼容别名（拼写修正前） */
+@deprecated("Use Multiplier", "0.2")
+class Multipler(widthA: Int = 16, widthB: Int = 16) extends Multiplier(widthA, widthB)
 
 // 左移位器
 class LeftShifter(width: Int = 32) extends Module {

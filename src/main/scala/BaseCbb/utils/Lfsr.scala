@@ -24,7 +24,7 @@ class Lfsr(width: Int = 16) extends Module {
     8  -> BigInt("10001011", 2),    // 0x8B: x^8 + x^6 + x^5 + x^4 + 1 (tap bits 7,5,4,3,1)
     16 -> BigInt("101101", 2),      // 0x2D: x^16 + x^5 + x^3 + x^2 + 1 (tap bits 4,2,1,0)
     24 -> BigInt("1000011011", 2),  // 0x20D: x^24 + x^4 + x^3 + x + 1 (tap bits 9,3,2,0)
-    32 -> BigInt("110000000000000000000111", 2) // 0x60000007: x^32 + x^22 + x^2 + x + 1
+    32 -> BigInt("400007", 16)      // 0x400007: x^32 + x^22 + x^2 + x + 1 (tap bits 22,2,1,0, IEEE 802.3 CRC-32 同款)
   )
 
   private val tap = polyTap.getOrElse(width, BigInt("10011", 2))

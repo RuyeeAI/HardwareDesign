@@ -55,7 +55,6 @@ class RegulariSlip (SrcNum:Int,DstNum:Int) extends GenModule {
   })
   val src_ptr = RegInit(VecInit(Seq.fill(SrcNum)(0.U(DstNum.W))))
   val dst_ptr = RegInit(VecInit(Seq.fill(DstNum)(0.U(SrcNum.W))))
-  val src_ptrx = RegInit(0.U(3.W))
   val mask_gnt = Wire(Vec(SrcNum,Vec(DstNum,Bool())))
 
   private val U_ISLIP_LOGIC = Module(new iSlipLogic(SrcNum, DstNum))
@@ -69,7 +68,6 @@ class RegulariSlip (SrcNum:Int,DstNum:Int) extends GenModule {
   }
   io.gnt := mask_gnt
 
-  src_ptrx := src_ptrx+1.U
   for (s <- 0 until SrcNum) {
     when(mask_gnt(s).reduceTree(_ | _)) {
       src_ptr(s) := io.gnt(s).asUInt

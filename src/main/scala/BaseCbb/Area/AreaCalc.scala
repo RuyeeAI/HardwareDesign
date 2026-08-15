@@ -33,9 +33,6 @@ object ProcessConfiguration{
   val pd_nd2_area  = nd2_area*comb_incr_syn2pr/logic_uti
 }
 
-object IR2AreaCommon{
-
-}
 
 case class GenArea(ff_num:Int, comb_area:Double=0, mem_area:Double=0){
   val ff_area:Double = ff_num*ProcessConfiguration.pd_ff_area
