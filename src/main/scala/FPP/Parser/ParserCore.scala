@@ -1,7 +1,6 @@
 package FPP.Parser
 
-import BaseCbb.GenModule
-import BaseCbb.GenBundle
+import BaseCbb.data.{GenBundle, GenModule}
 import chisel3._
 import chisel3.util._
 

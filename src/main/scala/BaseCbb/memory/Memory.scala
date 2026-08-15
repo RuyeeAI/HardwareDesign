@@ -1,5 +1,6 @@
 package BaseCbb.memory
-import BaseCbb.GenBundle
+
+import BaseCbb.data.GenBundle
 import chisel3.util._
 import chisel3._
 import chisel3.stage.ChiselStage

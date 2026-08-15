@@ -1,5 +1,6 @@
 package BaseCbb.arithmetic
 
+import BaseCbb.math.{AddSub, CarrySelectAdder, Comparator, LeftShifter, Multipler, RightShifter, RippleCarryAdder, Subtractor}
 import chisel3._
 import chiseltest._
 import org.scalatest._

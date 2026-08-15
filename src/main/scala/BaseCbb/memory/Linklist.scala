@@ -1,6 +1,6 @@
 package BaseCbb.memory
 
-import BaseCbb.GenModule
+import BaseCbb.data.GenModule
 import chisel3._
 import chisel3.util._
 import firrtl.PrimOps.Pad

@@ -1,8 +1,9 @@
 // See LICENSE.SiFive for license details.
 
 package BaseCbb.utils.cdc
+import BaseCbb.misc.AbstractPipelineReg
 import chisel3._
-import chisel3.util.{RegEnable, Cat}
+import chisel3.util.{Cat, RegEnable}
 
 /**  These wrap behavioral
   *  shift and next registers into specific modules to allow for

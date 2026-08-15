@@ -1,6 +1,6 @@
 package FPP.OSA.PreParser
 
-import BaseCbb.GenBundle
+import BaseCbb.data.GenBundle
 import chisel3._
 
 // ============= TCAM Entry =============

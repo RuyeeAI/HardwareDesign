@@ -1,5 +1,6 @@
 package BaseCbb.Clos
-import BaseCbb.utils.io.{Seq2Vec, SubVec}
+
+import BaseCbb.misc.{Seq2Vec, SubVec}
 import chisel3._
 
 

@@ -1,6 +1,6 @@
 package FPP.Parser
 
-import BaseCbb.GenBundle
+import BaseCbb.data.GenBundle
 import chisel3._
 
 // ============= Pipeline Configuration =============

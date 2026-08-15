@@ -1,5 +1,6 @@
 package FPP.Parser
-import BaseCbb.GenBundle
+
+import BaseCbb.data.GenBundle
 import chisel3._
 import chisel3.util.{is, switch}
 class Pho(PhoNum:Int,PhoWidth:Int) extends GenBundle{
