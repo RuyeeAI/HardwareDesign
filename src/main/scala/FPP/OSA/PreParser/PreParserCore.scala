@@ -33,15 +33,16 @@ class PreParserCore(
   // ========== VLAN Extraction ==========
 
   def extractVlanPrio(data: UInt, offset: UInt): (Bool, UInt, UInt) = {
-    val tpid = (data >> offset)(1, 0)  // TPID at offset
+    val tpid = (data >> offset)(15, 0)  // TPID (16b) at offset
     val isVlan = (tpid === PreParserConstants.ETH_VLAN) || (tpid === PreParserConstants.ETH_VLAN911)
 
-    val tci = (data >> (offset + 4.U))(1, 0)  // TCI after TPID (4 bytes offset)
-    val pri = tci(2, 0)                     // PCP/Priority (3 bits)
-    val dei = tci(4)                         // DEI (1 bit)
-    val vid = tci(15, 3)                     // VLAN ID (12 bits)
+    val tci = (data >> (offset + 4.U))(15, 0)  // TCI (16b) after TPID
+    // TCI layout: PCP[15:13], DEI[12], VID[11:0]  (per PreParser.md)
+    val pcp = tci(15, 13)               // PCP/Priority (3 bits)
+    val dei = tci(12)                   // DEI (1 bit)
+    val vid = tci(11, 0)                // VLAN ID (12 bits)
 
-    val vlanPrio = Cat(dei, pri)             // 4-bit: {DEI, PRI[2:0]}
+    val vlanPrio = Cat(dei, pcp)        // 4-bit: {DEI, PCP[2:0]}
 
     (isVlan, vlanPrio, vid)
   }
@@ -92,7 +93,7 @@ class PreParserCore(
       3.U -> 24.U
     )
   )
-  val etherTypeAfterVlan = (io.in_data >> nextEtherTypeOffset)(1, 0)
+  val etherTypeAfterVlan = (io.in_data >> nextEtherTypeOffset)(15, 0)
 
   vlanResult.hasOpaqueTag := etherTypeAfterVlan === PreParserConstants.ETH_OPAQUE
   vlanResult.hasIp := (etherTypeAfterVlan === PreParserConstants.ETH_IPV4) ||
@@ -111,8 +112,9 @@ class PreParserCore(
     val result = Wire(new OpaqueExtractResult)
 
     // OpaqueTag starts at offset (EtherType=0xFFFF at offset, so OpaqueTag data at offset+2)
-    val format = (data >> (offset + 2.U))(1, 0)(3, 0)  // bits[27:24] = format[3:0]
-    val pri = (data >> (offset + 2.U))(1, 0)(7, 4)     // bits[31:28] = pri[3:0]
+    val opaqueWord = (data >> (offset + 2.U))(31, 0)  // 32-bit OpaqueTag word
+    val format = opaqueWord(3, 0)   // bits[3:0] = format
+    val pri = opaqueWord(7, 4)      // bits[7:4] = priority
 
     // For 4B format: no additional length check needed
     // For 8B format: we just indicate length, actual parsing of extra data not needed for priority
@@ -131,7 +133,7 @@ class PreParserCore(
   // OpaqueTag offset depends on VLAN layers
   // After VLAN layers, next header EtherType is at offset 12 + 4*vlanCount
   // OpaqueTag content starts 2 bytes after EtherType
-  val nextHeaderOffset = Cat(0.U(2.W), 12.U(6.W)) + (vlanResult.vlanCount << 2)(7, 0)
+  val nextHeaderOffset = 12.U + (vlanResult.vlanCount << 2)  // 12 + 4*vlanCount
   val opaqueOffset = nextHeaderOffset + 2.U
 
   val opaqueResult = extractOpaqueTag(io.in_data, opaqueOffset)
@@ -140,15 +142,15 @@ class PreParserCore(
 
   def extractDscpFromIpv4(data: UInt, offset: UInt): UInt = {
     // IPv4 header: offset points to version/IHL byte
-    // DSCP is at bits[47:42] relative to offset (after version/IHL and TOS bytes)
-    val dscp = (data >> (offset + 2.U))(1, 0)(5, 0)  // TOS byte lower 6 bits
+    // DSCP is the upper 6 bits of the TOS byte (bits[47:42] relative to offset)
+    val dscp = (data >> (offset + 2.U))(7, 2)   // TOS byte [7:2] = DSCP[5:0]
     dscp
   }
 
   def extractDscpFromIpv6(data: UInt, offset: UInt): UInt = {
-    // IPv6: offset points to version byte, DSCP is at offset+1 in traffic class field
-    val tc = (data >> (offset + 8.U))(1, 0)  // traffic class bytes
-    val dscp = tc(5, 0)  // lower 6 bits
+    // IPv6: offset points to version byte, DSCP is in the traffic class field
+    val tc = (data >> offset)(15, 0)  // 2 bytes: version(4b) + TC(8b) + flow(4b)
+    val dscp = tc(9, 4)               // DSCP = TC[7:2] -> tc[9:4]
     dscp
   }
 

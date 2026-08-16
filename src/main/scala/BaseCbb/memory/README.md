@@ -46,6 +46,8 @@
 
 **SpMemoryWrap3(mem)** / **TpMemoryWrap3(mem)**: ECC/Parity 保护封装。层次: `User Logic → Wrap3 → Wrap → BB/SimMemory`。支持初始化和错误注入。
 
+**MemInitCpuAccess(mem 参数)**: Common Building Block —— 初始化 FSM（sIdle/sInit）+ CPU(Rs) 访问仲裁 FSM（sCpuIdle/sCpuWait/sCpuAccess/sCpuDone），由 Sp/TpMemoryWrap3 共享（消除两处逐行重复）。输入 `init/cpu/idleCycleTh0/userReadActive/userWriteActive/decData/uerr`，输出 `init* / cpuMemStart/blockUser/cpu*/cpuBackpress`。详见 `docs/memory_目录优化建议.md`。
+
 ### EccCodec
 
 ECC/Parity 编解码公共函数:

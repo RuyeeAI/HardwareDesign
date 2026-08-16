@@ -505,7 +505,6 @@ class SpMemoryWrap3(mem: Memory) extends Module {
   private val eccSegNum       = math.ceil(dataBits.toDouble / mem.protectWidthTh).toInt
   private val eccSegWidth     = math.ceil(dataBits.toDouble / eccSegNum).toInt
   private val lastEccSegWidth = dataBits - (eccSegNum - 1) * eccSegWidth
-  private val accCntW         = log2Ceil(mem.latency + 1)
 
   val io = IO(new Bundle {
     val lgc         = new SpMemoryLgcPort(mem.addrWidth, dataBits)
@@ -527,35 +526,7 @@ class SpMemoryWrap3(mem: Memory) extends Module {
   memWrap.clk   := clock
   memWrap.rst_n := !reset.asBool
 
-  // ── Init FSM ─────────────────────────────────────────────────────
-  val sIdle :: sInit :: Nil = Enum(2)
-  val state = RegInit(sIdle)
-  val initCnt = RegInit(0.U(mem.addrWidth.W))
-  val initDoneReg = RegInit(false.B)
-
-  val initActive = state === sInit
-  val initWe     = state === sInit
-  val initAddr   = initCnt
-  val initWdata  = 0.U(mem.dataWidth.W)
-
-  when(state === sIdle) {
-    when(io.dfx.init) {
-      initDoneReg := false.B
-      state := sInit
-      initCnt := 0.U
-    }
-  }.elsewhen(state === sInit) {
-    when(initCnt === (mem.depth - 1).U) {
-      state := sIdle
-      initDoneReg := true.B
-    }.otherwise {
-      initCnt := initCnt + 1.U
-    }
-  }
-
-  io.dfx.initDone := initDoneReg
-
-  // ── ECC decode (continuous; must precede CPU FSM for forward ref) ──
+  // ── ECC decode (continuous; feeds CBB CPU FSM) ──────────────────
   private val rawRdata = memWrap.lgc.rdata
   val rdataReg = rawRdata
 
@@ -563,98 +534,31 @@ class SpMemoryWrap3(mem: Memory) extends Module {
     rdataReg, dataBits, mem.protect, eccSegNum, eccSegWidth, lastEccSegWidth
   )
 
-  // ── CPU access logic ─────────────────────────────────────────────
-  val (cpuMemStart, cpuBlockUser, cpuWdataRaw, cpuWe, cpuRe, cpuAddr) = if (mem.RsAccess) {
+  // ── Init FSM + CPU access FSM（公共 CBB）─────────────────────────
+  private val initCpu = Module(new MemInitCpuAccess(
+    dataBits = dataBits, addrWidth = mem.addrWidth, latency = mem.latency,
+    depth = mem.depth, RsAccess = mem.RsAccess, RsMemoryDisLat = mem.RsMemoryDisLat,
+    dualPortAddr = false))
+  initCpu.io.init             := io.dfx.init
+  initCpu.io.idleCycleTh0     := io.cpuCfg.idleCycleTh0
+  initCpu.io.cpu              <> io.cpu
+  initCpu.io.userReadActive   := reFlopped || initCpu.io.initActive
+  initCpu.io.userWriteActive  := weFlopped || initCpu.io.initActive
+  initCpu.io.decData          := decData
+  initCpu.io.uerr             := uerr
 
-    // Separate idle check: CPU read waits only for user read, CPU write waits only for user write
-    val userReadActive  = reFlopped || initActive
-    val userWriteActive = weFlopped || initActive
-    val cpuBlockedByUser = Mux(io.cpu.re, userReadActive,
-                              Mux(io.cpu.we, userWriteActive, false.B))
-
-    // CPU access FSM
-    val sCpuIdle :: sCpuWait :: sCpuAccess :: sCpuDone :: Nil = Enum(4)
-    val cpuState     = RegInit(sCpuIdle)
-    val cpuWaitCnt   = RegInit(0.U(16.W))
-    val cpuAccessCnt = RegInit(0.U(accCntW.W))
-    val cpuRdataReg  = RegInit(0.U(dataBits.W))
-    val cpuAckReg    = RegInit(false.B)
-    val cpuStatusReg = RegInit(0.U(2.W))
-
-    val cpuReq = io.cpu.re || io.cpu.we
-
-    // cpuMemStart: combinational, fires in same cycle idle is detected (one idle cycle)
-    val memStart = (cpuState === sCpuIdle && cpuReq && !cpuBlockedByUser) ||
-                   (cpuState === sCpuWait && !cpuBlockedByUser)
-
-    io.cpuBackpress := cpuState === sCpuWait && cpuWaitCnt >= io.cpuCfg.idleCycleTh0
-
-    cpuAckReg := false.B  // default: single-cycle pulse
-
-    switch(cpuState) {
-      is(sCpuIdle) {
-        when(cpuReq) {
-          when(!cpuBlockedByUser) {
-            cpuState     := sCpuAccess
-            cpuAccessCnt := 1.U
-          }.otherwise {
-            cpuState   := sCpuWait
-            cpuWaitCnt := 0.U
-          }
-        }
-      }
-
-      is(sCpuWait) {
-        cpuWaitCnt := cpuWaitCnt + 1.U
-        when(cpuWaitCnt >= mem.RsMemoryDisLat.U) {
-          // Timeout: ACK=1, rdata=all-1s, status=3
-          cpuState     := sCpuDone
-          cpuRdataReg  := ~0.U(dataBits.W)
-          cpuStatusReg := 3.U
-          cpuAckReg    := true.B
-        }.elsewhen(!cpuBlockedByUser) {
-          cpuState     := sCpuAccess
-          cpuAccessCnt := 1.U
-        }
-      }
-
-      is(sCpuAccess) {
-        cpuAccessCnt := cpuAccessCnt + 1.U
-        when(cpuAccessCnt === mem.latency.U) {
-          cpuState     := sCpuDone
-          cpuRdataReg  := decData
-          cpuStatusReg := Mux(io.cpu.re && uerr, 1.U, 0.U)
-          cpuAckReg    := true.B
-        }
-      }
-
-      is(sCpuDone) {
-        when(!cpuReq) {
-          cpuState := sCpuIdle
-        }
-      }
-    }
-
-    // Connect CPU outputs
-    io.cpu.rdata  := cpuRdataReg
-    io.cpu.ack    := cpuAckReg
-    io.cpu.status := cpuStatusReg
-
-    val blockUser = cpuState === sCpuAccess || cpuState === sCpuDone
-    val wdataRaw  = io.cpu.wdata
-    val cpu_we    = io.cpu.we
-    val cpu_re    = io.cpu.re
-    val cpu_addr  = io.cpu.addr
-
-    (memStart, blockUser, wdataRaw, cpu_we, cpu_re, cpu_addr)
-  } else {
-    // Tie off CPU outputs when RsAccess disabled
-    io.cpu.rdata     := 0.U
-    io.cpu.ack       := false.B
-    io.cpu.status    := 0.U
-    io.cpuBackpress  := false.B
-    (false.B, false.B, 0.U(dataBits.W), false.B, false.B, 0.U(mem.addrWidth.W))
-  }
+  private val initActive   = initCpu.io.initActive
+  private val initWe       = initCpu.io.initWe
+  private val initAddr     = initCpu.io.initAddr
+  private val initWdata    = initCpu.io.initWdata
+  private val cpuMemStart  = initCpu.io.cpuMemStart
+  private val cpuBlockUser = initCpu.io.blockUser
+  private val cpuWdataRaw  = initCpu.io.cpuWdataRaw
+  private val cpuWe        = initCpu.io.cpuWe
+  private val cpuRe        = initCpu.io.cpuRe
+  private val cpuAddr      = initCpu.io.cpuWaddr
+  io.dfx.initDone    := initCpu.io.initDone
+  io.cpuBackpress    := initCpu.io.cpuBackpress
 
   // ── Shared ECC/Parity encoding ───────────────────────────────────
   private val wdataPreEncode = Mux(initActive, initWdata,
@@ -719,7 +623,6 @@ class TpMemoryWrap3(mem: Memory) extends Module {
   private val eccSegNum       = math.ceil(dataBits.toDouble / mem.protectWidthTh).toInt
   private val eccSegWidth     = math.ceil(dataBits.toDouble / eccSegNum).toInt
   private val lastEccSegWidth = dataBits - (eccSegNum - 1) * eccSegWidth
-  private val accCntW         = log2Ceil(mem.latency + 1)
 
   val io = IO(new Bundle {
     val lgc         = new TpMemoryLgcPort(mem.addrWidth, dataBits)
@@ -742,35 +645,7 @@ class TpMemoryWrap3(mem: Memory) extends Module {
   memWrap.clk   := clock
   memWrap.rst_n := !reset.asBool
 
-  // ── Init FSM ─────────────────────────────────────────────────────
-  private val sIdle :: sInit :: Nil = Enum(2)
-  private val state       = RegInit(sIdle)
-  private val initCnt     = RegInit(0.U(mem.addrWidth.W))
-  private val initDoneReg = RegInit(false.B)
-
-  private val initActive = state === sInit
-  private val initWe     = state === sInit
-  private val initAddr   = initCnt
-  private val initWdata  = 0.U(mem.dataWidth.W)
-
-  when(state === sIdle) {
-    when(io.dfx.init) {
-      initDoneReg := false.B
-      state   := sInit
-      initCnt := 0.U
-    }
-  }.elsewhen(state === sInit) {
-    when(initCnt === (mem.depth - 1).U) {
-      state       := sIdle
-      initDoneReg := true.B
-    }.otherwise {
-      initCnt := initCnt + 1.U
-    }
-  }
-
-  io.dfx.initDone := initDoneReg
-
-  // ── ECC decode (continuous; must precede CPU FSM for forward ref) ──
+  // ── ECC decode (continuous; feeds CBB CPU FSM) ──────────────────
   private val rawRdata = memWrap.lgc.rdata
   val rdataReg = rawRdata
 
@@ -778,96 +653,32 @@ class TpMemoryWrap3(mem: Memory) extends Module {
     rdataReg, dataBits, mem.protect, eccSegNum, eccSegWidth, lastEccSegWidth
   )
 
-  // ── CPU access logic ─────────────────────────────────────────────
-  val (cpuMemStart, cpuBlockUser, cpuWdataRaw, cpuWe, cpuRe, cpuWaddr, cpuRaddr) = if (mem.RsAccess) {
+  // ── Init FSM + CPU access FSM（公共 CBB）─────────────────────────
+  private val initCpu = Module(new MemInitCpuAccess(
+    dataBits = dataBits, addrWidth = mem.addrWidth, latency = mem.latency,
+    depth = mem.depth, RsAccess = mem.RsAccess, RsMemoryDisLat = mem.RsMemoryDisLat,
+    dualPortAddr = true))
+  initCpu.io.init             := io.dfx.init
+  initCpu.io.idleCycleTh0     := io.cpuCfg.idleCycleTh0
+  initCpu.io.cpu              <> io.cpu
+  initCpu.io.userReadActive   := reFlopped || initCpu.io.initActive
+  initCpu.io.userWriteActive  := weFlopped || initCpu.io.initActive
+  initCpu.io.decData          := decData
+  initCpu.io.uerr             := uerr
 
-    // Separate idle check: CPU read waits only for user read, CPU write waits only for user write
-    val userReadActive  = reFlopped || initActive
-    val userWriteActive = weFlopped || initActive
-    val cpuBlockedByUser = Mux(io.cpu.re, userReadActive,
-                              Mux(io.cpu.we, userWriteActive, false.B))
-
-    val sCpuIdle :: sCpuWait :: sCpuAccess :: sCpuDone :: Nil = Enum(4)
-    val cpuState     = RegInit(sCpuIdle)
-    val cpuWaitCnt   = RegInit(0.U(16.W))
-    val cpuAccessCnt = RegInit(0.U(accCntW.W))
-    val cpuRdataReg  = RegInit(0.U(dataBits.W))
-    val cpuAckReg    = RegInit(false.B)
-    val cpuStatusReg = RegInit(0.U(2.W))
-
-    val cpuReq = io.cpu.re || io.cpu.we
-
-    // cpuMemStart: combinational, fires in same cycle idle is detected
-    val memStart = (cpuState === sCpuIdle && cpuReq && !cpuBlockedByUser) ||
-                   (cpuState === sCpuWait && !cpuBlockedByUser)
-
-    io.cpuBackpress := cpuState === sCpuWait && cpuWaitCnt >= io.cpuCfg.idleCycleTh0
-
-    cpuAckReg := false.B  // default: single-cycle pulse
-
-    switch(cpuState) {
-      is(sCpuIdle) {
-        when(cpuReq) {
-          when(!cpuBlockedByUser) {
-            cpuState     := sCpuAccess
-            cpuAccessCnt := 1.U
-          }.otherwise {
-            cpuState   := sCpuWait
-            cpuWaitCnt := 0.U
-          }
-        }
-      }
-
-      is(sCpuWait) {
-        cpuWaitCnt := cpuWaitCnt + 1.U
-        when(cpuWaitCnt >= mem.RsMemoryDisLat.U) {
-          cpuState     := sCpuDone
-          cpuRdataReg  := ~0.U(dataBits.W)
-          cpuStatusReg := 3.U
-          cpuAckReg    := true.B
-        }.elsewhen(!cpuBlockedByUser) {
-          cpuState     := sCpuAccess
-          cpuAccessCnt := 1.U
-        }
-      }
-
-      is(sCpuAccess) {
-        cpuAccessCnt := cpuAccessCnt + 1.U
-        when(cpuAccessCnt === mem.latency.U) {
-          cpuState     := sCpuDone
-          cpuRdataReg  := decData
-          cpuStatusReg := Mux(io.cpu.re && uerr, 1.U, 0.U)
-          cpuAckReg    := true.B
-        }
-      }
-
-      is(sCpuDone) {
-        when(!cpuReq) {
-          cpuState := sCpuIdle
-        }
-      }
-    }
-
-    io.cpu.rdata  := cpuRdataReg
-    io.cpu.ack    := cpuAckReg
-    io.cpu.status := cpuStatusReg
-
-    val blockUser = cpuState === sCpuAccess || cpuState === sCpuDone
-    val wdataRaw  = io.cpu.wdata
-    val cpu_we    = io.cpu.we
-    val cpu_re    = io.cpu.re
-    val cpu_waddr = io.cpu.addr
-    val cpu_raddr = io.cpu.addr
-
-    (memStart, blockUser, wdataRaw, cpu_we, cpu_re, cpu_waddr, cpu_raddr)
-  } else {
-    // Tie off CPU outputs when RsAccess disabled
-    io.cpu.rdata     := 0.U
-    io.cpu.ack       := false.B
-    io.cpu.status    := 0.U
-    io.cpuBackpress  := false.B
-    (false.B, false.B, 0.U(dataBits.W), false.B, false.B, 0.U(mem.addrWidth.W), 0.U(mem.addrWidth.W))
-  }
+  private val initActive   = initCpu.io.initActive
+  private val initWe       = initCpu.io.initWe
+  private val initAddr     = initCpu.io.initAddr
+  private val initWdata    = initCpu.io.initWdata
+  private val cpuMemStart  = initCpu.io.cpuMemStart
+  private val cpuBlockUser = initCpu.io.blockUser
+  private val cpuWdataRaw  = initCpu.io.cpuWdataRaw
+  private val cpuWe        = initCpu.io.cpuWe
+  private val cpuRe        = initCpu.io.cpuRe
+  private val cpuWaddr     = initCpu.io.cpuWaddr
+  private val cpuRaddr     = initCpu.io.cpuRaddr
+  io.dfx.initDone    := initCpu.io.initDone
+  io.cpuBackpress    := initCpu.io.cpuBackpress
 
   // ── Shared ECC/Parity encoding ───────────────────────────────────
   private val wdataPreEncode = Mux(initActive, initWdata,
