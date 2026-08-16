@@ -1,4 +1,5 @@
 package BaseCbb.utils
+import BaseCbb.misc.ReorderQueue
 import BaseCbb.utils.timer._
 
 import chisel3._

@@ -6,11 +6,10 @@ import BaseCbb.RegCbb._
 object MarkdownGen {
 
   def generate(map: RegFileMap): String = {
-    val b = map.block
     val sb = new StringBuilder
-    sb ++= s"# ${b.devName} 寄存器手册\n\n"
-    sb ++= s"> 由 RegCbb 自动生成 · 寄存器基地址 `${hex(b.regBaseAddress)}` · 存储器基地址 `${hex(b.memBaseAddress)}`\n\n"
-    if (b.description.nonEmpty) sb ++= s"${b.description}\n\n"
+    sb ++= s"# ${map.deviceName} 寄存器手册\n\n"
+    sb ++= s"> 由 RegCbb 自动生成 · 寄存器基地址 `${hex(map.regBaseAddress)}` · 存储器基地址 `${hex(map.memBaseAddress)}`\n\n"
+    if (map.description.nonEmpty) sb ++= s"${map.description}\n\n"
 
     // 地址映射总表
     sb ++= "## 地址映射\n\n"
@@ -36,7 +35,7 @@ object MarkdownGen {
       if (a.reg.description.nonEmpty) sb ++= s"${a.reg.description}\n\n"
       sb ++= bitDiagram(a)
       sb ++= "\n\n| 位 | 字段 | 访问 | 复位 | 描述 |\n|---|---|---|---|---|\n"
-      a.fieldAllocations.sortBy(_.bitOffset).foreach { fa =>
+      a.fieldAllocations.sortBy(-_.bitOffset).foreach { fa =>
         val f = fa.field
         val bits = if (f.bitWidth == 1) s"[${fa.bitOffset}]" else s"[${fa.bitOffset + f.bitWidth - 1}:${fa.bitOffset}]"
         val enums = f.enumerations.toSeq.sortBy(_._1).map { case (v, (n, d)) =>
@@ -52,6 +51,18 @@ object MarkdownGen {
       sb ++= "| 名称 | 基地址 | 深度 | 位宽 | 大小 | 类型 | 说明 |\n|---|---|---|---|---|---|---|\n"
       map.mems.foreach { ma =>
         sb ++= s"| `${ma.mem.name}` | ${hex(ma.baseAddress)} | ${ma.mem.depth} | ${ma.mem.dataWidth} | ${ma.mem.byteSize} B | ${ma.mem.memType.id} | ${ma.mem.description} |\n"
+        if (ma.mem.entryFields.nonEmpty) {
+          sb ++= s"\n**${ma.mem.name} entry 域段**（位宽 ${ma.mem.dataWidth}，LSB-first）：\n\n"
+          sb ++= "| 位 | 字段 | 访问 | 复位 | 描述 |\n|---|---|---|---|---|\n"
+          ma.mem.entryFields.zip(ma.mem.entryFieldOffsets).sortBy(-_._2).foreach { case (f, bitOffset) =>
+            val bits = if (f.bitWidth == 1) s"[${bitOffset}]" else s"[${bitOffset + f.bitWidth - 1}:${bitOffset}]"
+            val enums = f.enumerations.toSeq.sortBy(_._1).map { case (v, (n, d)) =>
+              s"<br/>`0x${v.toString(16)}` = $n${if (d.nonEmpty) s"（$d）" else ""}"
+            }.mkString
+            sb ++= s"| $bits | `${f.name}` | ${f.access.id} | ${hex(f.resetValue)} | ${f.description}$enums |\n"
+          }
+          sb ++= "\n"
+        }
       }
       sb ++= "\n"
     }

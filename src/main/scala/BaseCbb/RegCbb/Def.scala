@@ -96,8 +96,22 @@ case class RegDef(
   require(fields.map(_.name).distinct.size == fields.size,
     s"register '$name': duplicate field names: ${fields.map(_.name).distinct.mkString(",")}")
   val totalBits: Int = fields.map(_.bitWidth).sum
+
+  /**
+   * 占据位宽（规则 3）：
+   *  - totalBits <= 32：占据 32bit（1 word），有效数据右对齐在低 bit 位（bit[0..totalBits-1]）；
+   *  - totalBits > 32：占据能容纳其位宽的 **2 的幂** 宽度（如 40→64、96→128），
+   *    有效数据从高 bit 位开始放（低 bit 位为 padding 0）。
+   */
+  val expandedBits: Int = if (totalBits <= 32) 32 else {
+    var p = 32
+    while (p < totalBits) p <<= 1
+    p
+  }
+  /** 有效数据起始 bit：<=32bit 右对齐（0）；>32bit 高 bit 放置（expandedBits - totalBits） */
+  val fieldBaseOffset: Int = if (totalBits <= 32) 0 else expandedBits - totalBits
   /** 占用的 32bit word 数 */
-  val wordCount: Int = (totalBits + 31) / 32
+  val wordCount: Int = expandedBits / 32
   /** 字节大小（按 4 字节对齐） */
   val byteSize: Int = wordCount * 4
 }
@@ -112,34 +126,121 @@ case class MemoryDef(
   baseAddress: Option[BigInt] = None,
   description: String = "",
   /** 总线访问（位宽 < memory 位宽时）是否原子：原子=写低字暂存、写最高字一次提交；非原子=逐字读-改-写 */
-  atomic: Boolean = true
+  atomic: Boolean = true,
+  /** entry 域段信息（可选）：每个 entry 的字段布局（LSB-first 紧凑）；位宽和必须 == dataWidth */
+  entryFields: Seq[RegFieldDef] = Seq.empty
 ) {
   require(depth > 0, s"memory '$name': depth must be > 0")
   require(dataWidth >= 32 && dataWidth % 32 == 0 && dataWidth <= 256,
     s"memory '$name': dataWidth must be a multiple of 32 in [32,256]")
   require(baseAddress.forall(_ >= 0), s"memory '$name': baseAddress must be >= 0")
+  require(entryFields.map(_.name).distinct.size == entryFields.size,
+    s"memory '$name': duplicate entry field names: ${entryFields.map(_.name).distinct.mkString(",")}")
+  require(entryFields.isEmpty || entryFields.map(_.bitWidth).sum == dataWidth,
+    s"memory '$name': entryFields total width ${entryFields.map(_.bitWidth).sum} != dataWidth $dataWidth")
   /** 地址位宽 = ceil(log2(depth))（按 dataWidth 单元编址） */
   val addrWidth: Int = {
     var w = 0; var d = depth - 1
     while (d > 0) { d >>= 1; w += 1 }
     math.max(1, w)
   }
-  /** 总线 32bit word 数 */
-  val wordCount: Int = dataWidth / 32
-  val byteSize: BigInt = BigInt(depth) * BigInt(dataWidth) / 8
+
+  /**
+   * 占据位宽（规则 3）：
+   *  - dataWidth <= 32：占据 32bit（1 word），有效数据右对齐在低 bit 位；
+   *  - dataWidth > 32：占据能容纳其位宽的 **2 的幂** 宽度（如 96→128），
+   *    有效数据从高 bit 位开始放（低 bit 位为 padding 0）。
+   *
+   * 说明：MemPortIO 外部接口宽度保持用户定义 dataWidth（外部 SRAM 位宽不变），
+   * 占据地址空间（byteSize/wordCount）按 2 的幂扩展；entry 域段在占据空间内高 bit 放置。
+   */
+  val expandedDataWidth: Int = if (dataWidth <= 32) 32 else {
+    var p = 32
+    while (p < dataWidth) p <<= 1
+    p
+  }
+  /** 有效数据起始 bit：<=32bit 右对齐（0）；>32bit 高 bit 放置（expandedDataWidth - dataWidth） */
+  val dataBaseOffset: Int = if (dataWidth <= 32) 0 else expandedDataWidth - dataWidth
+  /** 占据的 32bit word 数（按 2 的幂扩展；决定地址空间大小） */
+  val wordCount: Int = expandedDataWidth / 32
+  /** 字节大小（按占据位宽；地址空间 2 的幂对齐） */
+  val byteSize: BigInt = BigInt(depth) * BigInt(expandedDataWidth) / 8
+  /** entry 字段位偏移（基于占据位宽的高 bit 放置 + LSB-first 紧凑） */
+  val entryFieldOffsets: Seq[Int] =
+    entryFields.scanLeft(dataBaseOffset)(_ + _.bitWidth).init
 }
 
-/** 寄存器块定义（一个外设的完整寄存器文件） */
+object MemoryDef {
+  /** 便捷工厂：entry 域段来自 RegBundle 转换的字段序列，dataWidth 自动取字段位宽和 */
+  def fromBundle(name: String, depth: Int, fields: Seq[RegFieldDef],
+                 memType: MemoryAccessType = MemoryAccessType.SP,
+                 baseAddress: Option[BigInt] = None,
+                 description: String = "",
+                 atomic: Boolean = true): MemoryDef =
+    MemoryDef(name, depth, fields.map(_.bitWidth).sum, memType, baseAddress, description, atomic, fields)
+}
+
+/** 寄存器块定义（纯寄存器集合 —— 一个功能片段，不含存储器） */
 case class RegBlockDef(
   name: String,
-  regBaseAddress: BigInt,
-  memBaseAddress: BigInt,
   registers: Seq[RegDef],
-  memories: Seq[MemoryDef] = Seq.empty,
-  description: String = "",
-  deviceName: String = ""
+  description: String = ""
 ) {
+  require(registers.nonEmpty, s"reg block '$name': need at least one register")
   require(registers.map(_.name).distinct.size == registers.size,
-    s"block '$name': duplicate register names")
+    s"reg block '$name': duplicate register names")
+  val byteSize: BigInt = registers.map(_.byteSize).sum
+}
+
+/** 存储器块定义（纯存储器集合 —— 与寄存器块分离的另一种 RegBlock） */
+case class MemBlockDef(
+  name: String,
+  memories: Seq[MemoryDef],
+  description: String = ""
+) {
+  require(memories.nonEmpty, s"mem block '$name': need at least one memory")
+  require(memories.map(_.name).distinct.size == memories.size,
+    s"mem block '$name': duplicate memory names")
+  /** 存储器空间大小（按字节；含内部空隙的近似，按各 memory byteSize 求和） */
+  val byteSize: BigInt = memories.map(_.byteSize).sum
+}
+
+/**
+ * 功能模块定义：一个功能模块 = 多个寄存器块（RegBlockDef）+ 多个存储器块（MemBlockDef）。
+ *  - `baseAddress`：模块寄存器区基址。None = 由 System 分配器自动分配；Some = 手工指定（自动分配会跳过已占用区域）。
+ *  - `memBaseAddress`：模块存储器区基址。None = 自动紧随寄存器区之后（4 字节对齐）；Some = 手工指定。
+ *  - 模块内寄存器块连续排布（字节 4 对齐），存储器块区紧随寄存器区之后。
+ */
+case class ModuleDef(
+  name: String,
+  regBlocks: Seq[RegBlockDef] = Seq.empty,
+  memBlocks: Seq[MemBlockDef] = Seq.empty,
+  baseAddress: Option[BigInt] = None,
+  memBaseAddress: Option[BigInt] = None,
+  description: String = ""
+) {
+  require(regBlocks.nonEmpty || memBlocks.nonEmpty,
+    s"module '$name': need at least one reg block or mem block")
+  require(regBlocks.map(_.name).distinct.size == regBlocks.size,
+    s"module '$name': duplicate reg block names")
+  require(memBlocks.map(_.name).distinct.size == memBlocks.size,
+    s"module '$name': duplicate mem block names")
+  def regByteSize: BigInt = regBlocks.map(_.byteSize).sum
+  def memByteSize: BigInt = memBlocks.map(_.byteSize).sum
+  def allRegisters: Seq[RegDef] = regBlocks.flatMap(_.registers)
+  def allMemories: Seq[MemoryDef] = memBlocks.flatMap(_.memories)
+}
+
+/** 系统定义：一个系统 = 多个功能模块，模块间地址自动/手工分配，系统级译码分发 */
+case class SystemDef(
+  name: String,
+  modules: Seq[ModuleDef],
+  deviceName: String = "",
+  description: String = ""
+) {
+  require(modules.map(_.name).distinct.size == modules.size,
+    s"system '$name': duplicate module names")
   def devName: String = if (deviceName.nonEmpty) deviceName else name
+  def allRegisters: Seq[RegDef] = modules.flatMap(_.allRegisters)
+  def allMemories: Seq[MemoryDef] = modules.flatMap(_.allMemories)
 }

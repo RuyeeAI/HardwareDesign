@@ -15,13 +15,16 @@
 | `name` | String | — | 实例名称 |
 | `dataType` | Data | — | 数据类型 |
 | `depth` | Int | — | 深度（字数） |
-| `memoryType` | String | `"1RW"` | 端口类型: `"1RW"` / `"2RW"` |
+| `memoryType` | MemoryAccessType | `SP` | 端口类型: `SP` / `TP` / `DP` / `TCAM` |
 | `flopIn` | Boolean | `false` | 输入打拍 |
 | `flopOut` | Boolean | `true` | 输出打拍 |
-| `protect` | String | `"ECC"` | 保护方式: `"ECC"` / `"Parity"` / `"none"` |
+| `protect` | MemoryProtectType | `ECC` | 保护方式: `ECC` / `Parity` / `ProtNone` |
 | `CheckIn` | Boolean | `false` | ECC 层输入检查 |
 | `CheckOut` | Boolean | `true` | ECC 层输出检查 |
-| `protectWidThre` | Int | `320` | ECC 分段阈值 |
+| `protectWidthTh` | Int | `320` | ECC 分段阈值 |
+| `isPhysicalMemory` | Boolean | `false` | true=物理 BB / false=SimMemory |
+| `bypassOnConflict` | Boolean | `false` | 同地址读写旁路（TP） |
+| `RsAccess` | Boolean | `false` | 是否启用 CPU(Rs) 访问仲裁 |
 
 **计算属性**: `dataWidth` (含 ECC/Parity 开销), `latency` (1 + flopIn + flopOut), `addrWidth` (log2Ceil(depth))
 
@@ -39,7 +42,7 @@
 
 ### 封装层
 
-**SpMemoryWrap(mem)** / **TpMemoryWrap(mem)**: 根据 `MemoryWrap.MEM_TYPE` 切换仿真/物理实现，支持输入/输出插拍。
+**SpMemoryWrap(mem)** / **TpMemoryWrap(mem)**: 根据 `mem.isPhysicalMemory` 切换仿真(`SimMemory`)/物理(`*MemoryBB`)实现，支持输入/输出插拍（`flopIn`/`flopOut`）。总读延迟 = 1 + flopIn + flopOut。
 
 **SpMemoryWrap3(mem)** / **TpMemoryWrap3(mem)**: ECC/Parity 保护封装。层次: `User Logic → Wrap3 → Wrap → BB/SimMemory`。支持初始化和错误注入。
 
@@ -54,6 +57,8 @@ ECC/Parity 编解码公共函数:
 
 ## 2. Bitmap.scala — Bitmap 资源分配器
 
+位图语义：**1 = 可用，0 = 已分配**；初始全 1（全可用）。组合内核复用 `BitmapKernel`（与 IDPool / BitmapCacheMem 统一）。
+
 ```scala
 class Bitmap(RscNum: Int) extends GenModule
 ```
@@ -64,8 +69,8 @@ class Bitmap(RscNum: Int) extends GenModule
 | `req_ptr` | Output | 分配的资源指针 (PriorityEncoder 选择最低空闲位) |
 | `ret_vld` | Input | 归还请求 |
 | `ret_ptr` | Input | 归还的指针 |
-| `empty` | Output | 无可用资源 (bitmap 全 1) |
-| `full` | Output | 全部空闲 (bitmap 全 0) |
+| `empty` | Output | 无可用资源 (bitmap 全 0，全占) |
+| `full` | Output | 全部空闲 (bitmap 全 1，全可用) |
 
 ---
 

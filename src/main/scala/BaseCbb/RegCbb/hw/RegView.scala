@@ -143,3 +143,103 @@ object RegView {
     v
   }
 }
+
+// ==================== 系统级视图（多模块 / 多块 / 多寄存器） ====================
+
+/**
+ * 系统级用户逻辑连接视图。
+ *
+ * 三级命名访问：
+ * {{{
+ *   val sysView = SystemRegView(sysMap, sysRegFile)
+ *   sysView.module("uart").reg("ctrl").field("baud_div").value      // 模块 → 寄存器 → 字段
+ *   sysView.module("uart").block("ctrl_regs").reg("ctrl")            // 模块 → 块 → 寄存器
+ *   sysView.reg("ctrl")                                              // 全系统平铺（寄存器名全局唯一）
+ *   sysView.module("uart").regs                                      // 模块内所有寄存器
+ * }}}
+ */
+class SystemRegView(sysMap: SystemMap, flatView: RegView) {
+  /** 全系统平铺视图（寄存器名全局唯一时可用） */
+  def reg(name: String): RegHandle = flatView.reg(name)
+  def apply(name: String): RegHandle = flatView.reg(name)
+  def names: Seq[String] = flatView.names
+
+  /** 模块句柄 */
+  def module(name: String): ModuleRegHandle =
+    new ModuleRegHandle(sysMap.moduleByName(name), flatView)
+
+  def modules: Seq[ModuleRegHandle] = sysMap.modules.map(ma => new ModuleRegHandle(ma, flatView))
+}
+
+/** 模块级句柄：模块 → 寄存器（或 → 块 → 寄存器） */
+class ModuleRegHandle(ma: ModuleAllocation, flatView: RegView) {
+  def name: String = ma.module.name
+  def baseAddress: BigInt = ma.baseAddress
+  def sizeBytes: BigInt = ma.sizeBytes
+
+  /** 模块内寄存器（平铺查找，寄存器名须在模块内唯一） */
+  def reg(name: String): RegHandle = flatView.reg(name)
+  def apply(name: String): RegHandle = reg(name)
+
+  /** 模块内所有寄存器（按块分组） */
+  def regs: Seq[RegHandle] = ma.allRegs.map(a => flatView.reg(a.reg.name))
+
+  /** 寄存器块句柄 */
+  def block(name: String): BlockRegHandle =
+    ma.regBlocks.find(_.block.name == name).map(b => new BlockRegHandle(b, this))
+      .getOrElse(sys.error(s"reg block '$name' not found in module '$name', available: " +
+        ma.regBlocks.map(_.block.name).mkString(", ")))
+
+  def blocks: Seq[BlockRegHandle] = ma.regBlocks.map(b => new BlockRegHandle(b, this))
+
+  /** 存储器块句柄 */
+  def memBlock(name: String): MemBlockHandle =
+    ma.memBlocks.find(_.block.name == name).map(b => new MemBlockHandle(b))
+      .getOrElse(sys.error(s"mem block '$name' not found in module '$name'"))
+}
+
+/** 寄存器块级句柄：块 → 寄存器 */
+class BlockRegHandle(rb: RegBlockAllocation, mod: ModuleRegHandle) {
+  def name: String = rb.block.name
+  def baseAddress: BigInt = rb.baseAddress
+  def reg(name: String): RegHandle = mod.reg(name)
+  def apply(name: String): RegHandle = reg(name)
+  def regs: Seq[RegHandle] = rb.regs.map(a => mod.reg(a.reg.name))
+}
+
+/** 存储器块级句柄（描述性：外部 SRAM 经 io.memPorts 挂接） */
+class MemBlockHandle(mb: MemBlockAllocation) {
+  def name: String = mb.block.name
+  def baseAddress: BigInt = mb.baseAddress
+  def mems: Seq[MemAllocation] = mb.mems
+}
+
+object SystemRegView {
+  /** 简单总线版 */
+  def apply(sysMap: SystemMap, top: SystemRegFileTop): SystemRegView = {
+    val v = new SystemRegView(sysMap, new RegView(sysMap.flatMap, top.io.user))
+    top.io.memPorts.elements.foreach { case (_, p) =>
+      val port = p.asInstanceOf[MemPortIO]
+      port.rdata := 0.U(port.rdata.getWidth.W)
+      port.ack := false.B
+      port.status := 0.U(3.W)
+    }
+    v
+  }
+
+  /** AXI-Lite 版 */
+  def apply(sysMap: SystemMap, top: SystemAxiLiteRegFile): SystemRegView = {
+    val v = new SystemRegView(sysMap, new RegView(sysMap.flatMap, top.io.user))
+    top.io.memPorts.elements.foreach { case (_, p) =>
+      val port = p.asInstanceOf[MemPortIO]
+      port.rdata := 0.U(port.rdata.getWidth.W)
+      port.ack := false.B
+      port.status := 0.U(3.W)
+    }
+    v
+  }
+
+  /** 自定义 user Record（透传版） */
+  def apply(sysMap: SystemMap, top: SystemRegFileTop, user: RegUserRecord): SystemRegView =
+    new SystemRegView(sysMap, new RegView(sysMap.flatMap, user))
+}

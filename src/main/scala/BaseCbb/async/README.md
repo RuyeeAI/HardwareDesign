@@ -104,7 +104,8 @@ class AsyncBus[T <: Data](gen: T) extends Module
 class AsyncHandshake(dataType: UInt, dataWidth: Int = 32) extends Module
 ```
 
-基于内部 `AsyncFifoCore` 的异步 FIFO 封装，两侧均提供 `wrValid/Ready` 和 `rdValid/Ready` 握手。
+基于内部异步 FIFO 核心的封装，两侧均提供 `wrValid/Ready` 和 `rdValid/Ready` 握手。
+（⚠ 注意：`AsyncHandshake`/`AsyncFifoCore` 类当前无对应源码 —— 异步 FIFO 的现役实现位于 `fifo/AsyncFifos.scala`（格雷码指针 + 外部 memory，`wrEn/rdEn` 风格端口）。如需握手式接口请参考 `fifo/` 或补回本类。）
 
 ---
 
@@ -130,13 +131,14 @@ class GrayCounter(width: Int = 4) extends Module
 
 ## 内部模块
 
-### AsyncFifoCore — 异步 FIFO 核心
+### AsyncFifoCore — 异步 FIFO 核心（无对应代码）
 
 ```scala
-class AsyncFifoCore(dataWidth: Int = 32, addrWidth: Int = 4) extends Module
+class AsyncFifoCore(dataWidth: Int = 32, addrWidth: Int = 4) extends Module   // ⚠ 仅文档记载，源码不存在
 ```
 
-异步 FIFO 内部核心，使用格雷码指针、2-ff 同步器进行满/空判断。被 `AsyncFifo` 和 `AsyncHandshake` 使用。
+文档记载：异步 FIFO 内部核心，使用格雷码指针、2-ff 同步器进行满/空判断。被 `AsyncFifo` 和 `AsyncHandshake` 使用。
+**现状**：grep 全部 `.scala` 无此类定义 —— 属文档/代码漂移（或已废弃）。现役异步 FIFO 在 `fifo/AsyncFifos.scala`（`class AsyncFifo`，格雷码指针 + 外部 `TpMemoryPort`）。
 
 ---
 

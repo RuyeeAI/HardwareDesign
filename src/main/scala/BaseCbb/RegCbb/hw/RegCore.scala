@@ -33,7 +33,7 @@ class FieldInputRecord(entries: Seq[(String, Int)]) extends Record {
  *      hwWrEn   —— RW 硬件直写使能（寄存器级）
  */
 class RegCoreIO(alloc: RegAllocation) extends Bundle {
-  private val totalW = alloc.totalBits
+  private val totalW = alloc.reg.expandedBits
 
   val wrEn   = Output(Bool())
   val wrData = Output(UInt(totalW.W))
@@ -100,7 +100,7 @@ case class FieldCfg(field: RegFieldDef, bitOffset: Int) {
  * 优先级（同拍冲突）：SW 写 > 读副作用(RC/RS) > HW set/clr/tog。
  */
 class FieldReg(alloc: RegAllocation, dataWidth: Int) extends Module {
-  private val totalW = alloc.totalBits
+  private val totalW = alloc.reg.expandedBits
   private val wordCount = alloc.wordCount
   private val atomic = alloc.reg.atomic
   private val wordSelWidth = math.max(1, log2Ceil(wordCount))
@@ -130,8 +130,10 @@ class FieldReg(alloc: RegAllocation, dataWidth: Int) extends Module {
     val mask = ((BigInt(1) << cfg.width) - 1) << cfg.bitOffset
     (acc & ~mask.U(totalW.W)) | (v << cfg.bitOffset)
   }
-  // 当前 word 的读回（word = dataWidth 位，按位偏移）
-  private val wordShift = io.wordSel << log2Ceil(dataWidth)
+  // 当前 word 的读回（word 间大端：wordSel=0（低地址）= 最高有效 word）
+  // 位 word 索引 p = wordCount-1-wordSel（p=0 为最低位 word）
+  private val bitWordIdx = (wordCount - 1).U - io.wordSel
+  private val wordShift = bitWordIdx << log2Ceil(dataWidth)
   io.dec.rdata := ((readVal >> wordShift).pad(dataWidth))(dataWidth - 1, 0)
 
   // ---------------- 写（多字原子/非原子） ----------------
@@ -211,37 +213,42 @@ class FieldReg(alloc: RegAllocation, dataWidth: Int) extends Module {
   }
 
   if (atomic) {
-    // ---- 原子：低字进 shadow，最高字提交 ----
-    val lastW = wordCount - 1
-    val shadows = (0 until lastW).map { w =>
+    // ---- 原子：非最高有效 word 进 shadow，写最高有效 word（wordSel=0，低地址）时提交 ----
+    // word 间大端：wordSel=0 = 最高有效 word（低地址高有效）
+    val lastW = 0 // 提交 word = wordSel 0（最高有效 word）
+    val shadows = (0 until wordCount - 1).map { w =>
       val s = RegInit(0.U(dataWidth.W)); s.suggestName(s"shadow_w${w}"); s
     }
-    // 提交值：bits[w*dataWidth +: dataWidth] ← (w==last) ? wdata : shadows(w)
+    // 提交值：位 word 索引 p = wordCount-1-wordSel；p==wordCount-1（最高有效 word）← wdata，
+    // 其余 ← shadows(p)（shadows 按位 word 索引 p=0..wordCount-2 存）
     val commitVal = Wire(UInt(totalW.W))
-    commitVal := (0 until wordCount).foldLeft(0.U(totalW.W)) { case (acc, w) =>
-      val src = if (w == lastW) io.dec.wdata else shadows(w)
-      val mask = (((BigInt(1) << dataWidth) - 1) << (w * dataWidth)) & ((BigInt(1) << totalW) - 1)
-      (acc & ~mask.U(totalW.W)) | (src << (w * dataWidth))
+    commitVal := (0 until wordCount).foldLeft(0.U(totalW.W)) { case (acc, p) =>
+      val src = if (p == wordCount - 1) io.dec.wdata else shadows(p)
+      val mask = (((BigInt(1) << dataWidth) - 1) << (p * dataWidth)) & ((BigInt(1) << totalW) - 1)
+      (acc & ~mask.U(totalW.W)) | (src << (p * dataWidth))
     }
     when(io.dec.wr) {
-      (0 until lastW).foreach { w =>
-        when(io.wordSel === w.U) { shadows(w) := io.dec.wdata }
-      }
-      when(io.wordSel === lastW.U) {
+      when(io.wordSel === 0.U) {
+        // 写最高有效 word（低地址）→ 提交完整值
         cfgs.foreach { cfg =>
           storages.get(cfg.name).foreach { st =>
             applyFieldSemantics(st, commitVal(cfg.hi, cfg.bitOffset), cfg.field.access)
           }
         }
+      }.otherwise {
+        // 写其它 word → 进 shadow（位 word 索引 p = wordCount-1-wordSel）
+        (0 until wordCount - 1).foreach { p =>
+          when(bitWordIdx === p.U) { shadows(p) := io.dec.wdata }
+        }
       }
     }
   } else {
-    // ---- 非原子：逐 word 直接写 ----
+    // ---- 非原子：逐 word 直接写（位 word 索引 p = wordCount-1-wordSel） ----
     when(io.dec.wr) {
-      (0 until wordCount).foreach { w =>
-        when(io.wordSel === w.U) {
+      (0 until wordCount).foreach { p =>
+        when(bitWordIdx === p.U) {
           cfgs.foreach { cfg =>
-            storages.get(cfg.name).foreach { st => applyWordWrite(st, cfg, w) }
+            storages.get(cfg.name).foreach { st => applyWordWrite(st, cfg, p) }
           }
         }
       }
@@ -299,10 +306,10 @@ class MemPortIO(val addrWidth: Int, val dataWidth: Int) extends Bundle {
   val status = Input(UInt(3.W))
 }
 
-/** 按存储器名的端口集合（每端口宽度随 MemoryDef） */
+/** 按存储器名的端口集合（每端口宽度随 MemoryDef 占据位宽） */
 class MemPortRecord(mems: Seq[MemAllocation]) extends Record {
   val elements: ListMap[String, MemPortIO] =
-    ListMap(mems.map(m => m.mem.name -> new MemPortIO(m.mem.addrWidth, m.mem.dataWidth)): _*)
+    ListMap(mems.map(m => m.mem.name -> new MemPortIO(m.mem.addrWidth, m.mem.expandedDataWidth)): _*)
 }
 
 /** 同向连接两个 MemPortRecord（外层包装器 ↔ 内层 RegFileTop） */
@@ -351,7 +358,7 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
   }.toMap
 
   private val regHits = map.regs.map { a =>
-    val base = map.block.regBaseAddress + a.byteOffset
+    val base = map.regBaseAddress + a.byteOffset
     if (a.wordCount <= 1) io.addr === base.U(addrWidth.W)
     else io.addr >= base.U(addrWidth.W) && io.addr < (base + a.byteSize).U(addrWidth.W)
   }
@@ -361,7 +368,7 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
     m.io.dec.wr := io.wr && regHits(i)
     m.io.dec.rd := io.rd && regHits(i)
     m.io.dec.wdata := io.wdata
-    val base = map.block.regBaseAddress + a.byteOffset
+    val base = map.regBaseAddress + a.byteOffset
     if (a.wordCount <= 1) {
       m.io.wordSel := 0.U
     } else {
@@ -378,14 +385,17 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
   }
   private val memRdata: Seq[UInt] = map.mems.zip(memHits).map { case (ma, hit) =>
     val mem = ma.mem
+    val eW = mem.expandedDataWidth          // 占据位宽（2 的幂，规则 3）
     val port = io.memPorts.elements(mem.name).asInstanceOf[MemPortIO]
     val offset = io.addr - ma.baseAddress.U(addrWidth.W)
-    val unit = offset >> log2Ceil(mem.dataWidth / 8)          // dataWidth 单元索引
+    val unit = offset >> log2Ceil(eW / 8)   // expandedDataWidth 单元索引
+    // word 间大端：wordInUnit（地址 word）=0 对应最高有效 word（位 word 索引 p = wordCount-1-wordInUnit）
     val wordInUnit: UInt =
       if (mem.wordCount == 1) 0.U(1.W)
       else (offset >> log2Ceil(dataWidth / 8))(log2Ceil(mem.wordCount) - 1, 0)
+    val bitWordIdx = (mem.wordCount - 1).U - wordInUnit   // 位 word 索引（p=0 最低位 word）
 
-    // 原子模式 shadow（低字暂存，最高字提交）
+    // 原子模式 shadow（低有效 word 暂存，写最高有效 word（wordInUnit=0）提交）
     val shadowMem =
       if (mem.atomic && mem.wordCount > 1)
         Some(Mem(mem.depth * mem.wordCount, UInt(dataWidth.W)))
@@ -399,44 +409,44 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
     val memState = RegInit(stIdle)
     val memUnit  = RegInit(0.U(mem.addrWidth.W))
     val memWord  = RegInit(0.U(math.max(1, log2Ceil(mem.wordCount)).W))
-    val memWdata = RegInit(0.U(mem.dataWidth.W))
+    val memWdata = RegInit(0.U(eW.W))
 
-    // 原子提交时的完整写数据（由 shadow + 本次高字组装）
-    def commitWdata: UInt = (0 until mem.wordCount).foldLeft(0.U(mem.dataWidth.W)) { case (acc, w) =>
-      val src = if (w == mem.wordCount - 1) io.wdata
-                else shadowMem.get.read((unit << log2Ceil(mem.wordCount)) | w.U)
-      val mask = ((BigInt(1) << dataWidth) - 1) << (w * dataWidth)
-      (acc & ~mask.U(mem.dataWidth.W)) | (src << (w * dataWidth))
+    // 原子提交时的完整写数据（大端拼字：位 word p=wordCount-1 ← wdata（wordInUnit=0 写入），其余 ← shadow）
+    def commitWdata: UInt = (0 until mem.wordCount).foldLeft(0.U(eW.W)) { case (acc, p) =>
+      val src = if (p == mem.wordCount - 1) io.wdata
+                else shadowMem.get.read((unit << log2Ceil(mem.wordCount)) | p.U)
+      val mask = ((BigInt(1) << dataWidth) - 1) << (p * dataWidth)
+      (acc & ~mask.U(eW.W)) | (src << (p * dataWidth))
     }
 
     switch(memState) {
       is(stIdle) {
         when(io.wr && hit) {
           if (mem.wordCount == 1) {
-            // 单字：直接写请求
+            // 单字：直接写请求（数据右对齐在占据空间低 bit，此处 expanded==dataWidth）
             memUnit := unit
-            memWdata := io.wdata.pad(mem.dataWidth)
+            memWdata := io.wdata.pad(eW)
             memState := stWrWait
           } else if (mem.atomic) {
-            when(wordInUnit === (mem.wordCount - 1).U) {
-              // 最高字：提交完整值
+            when(wordInUnit === 0.U) {
+              // 写最高有效 word（低地址）→ 提交完整值
               memUnit := unit
               memWdata := commitWdata
               memState := stWrWait
             }.otherwise {
-              // 低字：进 shadow（无需用户侧）
-              shadowMem.get.write((unit << log2Ceil(mem.wordCount)) | wordInUnit, io.wdata)
+              // 写低有效 word → 进 shadow（按位 word 索引 p = wordCount-1-wordInUnit）
+              shadowMem.get.write((unit << log2Ceil(mem.wordCount)) | bitWordIdx, io.wdata)
             }
           } else {
             // 非原子多字：先读-改-写（读请求）
             memUnit := unit
-            memWord := wordInUnit
+            memWord := bitWordIdx
             memWdata := io.wdata
             memState := stRmwRead
           }
         }.elsewhen(io.rd && hit) {
           memUnit := unit
-          memWord := wordInUnit
+          memWord := bitWordIdx
           memState := stRdWait
         }
       }
@@ -449,8 +459,8 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
       is(stRmwRead) {
         when(port.ack) {
           memWdata := MuxLookup(memWord, port.rdata,
-            (0 until mem.wordCount).map { w =>
-              w.U -> patch(port.rdata, w * dataWidth, w * dataWidth + dataWidth - 1, memWdata, mem.dataWidth)
+            (0 until mem.wordCount).map { p =>
+              p.U -> patch(port.rdata, p * dataWidth, p * dataWidth + dataWidth - 1, memWdata, eW)
             })
           memState := stWrWait // 合并后写回
         }
@@ -466,7 +476,7 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
 
     // 读响应：总线读请求的 ack 拍（state==stRdWait）采样；
     // status 非 MemStatus.OK 表示数据无效 → 总线读回 0
-    val respData = Mux(port.status === MemStatus.OK, port.rdata, 0.U(mem.dataWidth.W))
+    val respData = Mux(port.status === MemStatus.OK, port.rdata, 0.U(eW.W))
     val respWord = (respData >> (memWord << log2Ceil(dataWidth)))(dataWidth - 1, 0)
     val respRegWord = RegEnable(respWord, port.ack && (memState === stRdWait))
     Mux(port.ack && (memState === stRdWait), respWord, respRegWord)

@@ -88,11 +88,59 @@ object BundleToRegDefs {
       toRegDef(regName, data, bundle.Attr, atomic)
     }
 
-  /** 便捷入口：由 RegBundle 直接构造寄存器块（含基地址等） */
+  /**
+   * 把 RegBundle 转换为 memory entry 的扁平字段序列（LSB-first 紧凑排列）。
+   *
+   * 每个顶层元素 = 一个字段组：
+   *  - 嵌套 RegBundle：内部字段紧凑排列（LSB-first），作为 entry 的连续域段；
+   *  - 叶子元素：单字段（字段名 = 元素名）。
+   * 字段位宽和 = entry 位宽（即 MemoryDef.dataWidth，由 MemoryDef.fromBundle 自动推导）。
+   *
+   * 用法：
+   * {{{
+   *   class FifoEntry extends RegBundle {
+   *     val tag  = UInt(8.W)
+   *     val data = UInt(24.W)
+   *     Attr += (tag  -> FieldAttr("标签"))
+   *     Attr += (data -> FieldAttr("数据"))
+   *   }
+   *   val mem = MemoryDef.fromBundle("fifo", 64, BundleToRegDefs.toEntryFields(new FifoEntry))
+   *   // dataWidth = 32（8+24），tag[7:0]、data[31:8]
+   * }}}
+   */
+  def toEntryFields(bundle: RegBundle): Seq[RegFieldDef] = {
+    def fieldOf(fname: String, fdata: Data, attr: FieldAttr, regSuffix: Option[AccessType]): RegFieldDef = {
+      val access = attr.access.getOrElse(regSuffix.getOrElse(inferAccess(fname)))
+      RegFieldDef(fname, fdata.getWidth, access, attr.reset, attr.desc)
+    }
+    bundle.elements.toSeq.reverse.flatMap { case (regName, data) =>
+      val regSuffix = suffixMap.collectFirst { case (s, t) if regName.endsWith(s) => t }
+      data match {
+        case sub: RegBundle =>
+          // 嵌套：内部字段紧凑排列（LSB-first），作为 entry 连续域段
+          sub.elements.toSeq.reverse.map { case (fname, fdata) =>
+            val attr = sub.Attr.getOrElse(fdata, FieldAttr())
+            fieldOf(fname, fdata, attr, regSuffix)
+          }
+        case _ =>
+          // 叶子：单字段（字段名 = 元素名）
+          val attr = bundle.Attr.getOrElse(data, FieldAttr())
+          Seq(fieldOf(regName, data, attr, regSuffix))
+      }
+    }
+  }
+
+  /** 便捷入口：由 RegBundle 直接构造纯寄存器块（RegBlockDef；不含存储器） */
   def toBlock(name: String, bundle: RegBundle,
-              regBaseAddress: BigInt = 0,
-              memBaseAddress: BigInt = 0,
-              description: String = "",
-              deviceName: String = ""): RegBlockDef =
-    RegBlockDef(name, regBaseAddress, memBaseAddress, toRegDefs(bundle), Seq.empty, description, deviceName)
+              description: String = ""): RegBlockDef =
+    RegBlockDef(name, toRegDefs(bundle), description)
+
+  /** 便捷入口：由 RegBundle 直接构造功能模块（寄存器块自动并入） */
+  def toModule(name: String, bundle: RegBundle,
+               regBlockName: String = "regs",
+               baseAddress: Option[BigInt] = None,
+               memBaseAddress: Option[BigInt] = None,
+               description: String = ""): ModuleDef =
+    ModuleDef(name, Seq(RegBlockDef(regBlockName, toRegDefs(bundle), description)),
+      Seq.empty, baseAddress, memBaseAddress, description)
 }

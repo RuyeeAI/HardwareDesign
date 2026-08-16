@@ -6,14 +6,13 @@ import BaseCbb.RegCbb._
 object JsonGen {
 
   def generate(map: RegFileMap): String = {
-    val b = map.block
     val sb = new StringBuilder
     sb ++= "{\n"
-    sb ++= s"""  "deviceName": ${q(b.devName)},\n"""
-    sb ++= s"""  "displayName": ${q(b.name)},\n"""
-    sb ++= s"""  "description": ${q(b.description)},\n"""
-    sb ++= s"""  "regBaseAddress": ${q(hex(b.regBaseAddress))},\n"""
-    sb ++= s"""  "memBaseAddress": ${q(hex(b.memBaseAddress))},\n"""
+    sb ++= s"""  "deviceName": ${q(map.deviceName)},\n"""
+    sb ++= s"""  "displayName": ${q(map.blockName)},\n"""
+    sb ++= s"""  "description": ${q(map.description)},\n"""
+    sb ++= s"""  "regBaseAddress": ${q(hex(map.regBaseAddress))},\n"""
+    sb ++= s"""  "memBaseAddress": ${q(hex(map.memBaseAddress))},\n"""
     sb ++= s"""  "totalRegByteSize": ${map.totalRegByteSize},\n"""
     sb ++= s"""  "totalMemByteSize": ${map.totalMemByteSize},\n"""
     sb ++= "  \"registers\": [\n"
@@ -59,7 +58,20 @@ object JsonGen {
       sb ++= s"""      "byteSize": ${m.byteSize},\n"""
       sb ++= s"""      "memType": ${q(m.memType.id)},\n"""
       sb ++= s"""      "atomic": ${m.atomic},\n"""
-      sb ++= s"""      "description": ${q(m.description)}\n"""
+      sb ++= s"""      "description": ${q(m.description)},\n"""
+      sb ++= "      \"entryFields\": [\n"
+      m.entryFields.zip(m.entryFieldOffsets).sortBy(-_._2).zipWithIndex.foreach { case ((f, bitOffset), k) =>
+        sb ++= "        {\n"
+        sb ++= s"""          "name": ${q(f.name)},\n"""
+        sb ++= s"""          "bitOffset": $bitOffset,\n"""
+        sb ++= s"""          "bitWidth": ${f.bitWidth},\n"""
+        sb ++= s"""          "access": ${q(f.access.id)},\n"""
+        sb ++= s"""          "writeAction": ${q(f.writeAction.id)},\n"""
+        sb ++= s"""          "resetValue": ${f.resetValue},\n"""
+        sb ++= s"""          "description": ${q(f.description)}\n"""
+        sb ++= "        }" + (if (k < m.entryFields.size - 1) "," else "") + "\n"
+      }
+      sb ++= "      ]\n"
       sb ++= "    }" + (if (i < map.mems.size - 1) "," else "") + "\n"
     }
     sb ++= "  ]\n"

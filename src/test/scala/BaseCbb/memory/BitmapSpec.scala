@@ -20,4 +20,5 @@ class BitmapSpec extends AnyFlatSpec with Matchers {
 
   // Note: Bitmap uses GenModule base class and requires external memory port connections
   // Full functional testing requires integration with memory subsystem
+  // [touch-2] Bitmap.scala restored (uses BitmapKernel, 1=available) — force zinc recompile of assertCompiles macro
 }

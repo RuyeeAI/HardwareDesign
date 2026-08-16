@@ -1,4 +1,5 @@
 package BaseCbb.utils
+import BaseCbb.math.{ZCounter, TwoWayCounter, WideCounter}
 import BaseCbb.utils.timer._
 
 import chisel3._
