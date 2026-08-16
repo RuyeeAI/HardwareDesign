@@ -29,3 +29,6 @@ project/target
 *.swp
 *.swo
 *~
+
+# Feishu app credentials (local, never commit)
+feishu.conf
