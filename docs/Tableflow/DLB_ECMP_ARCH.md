@@ -1,11 +1,11 @@
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'fontSize': '12px'}}}%%
-flowchart TB
+flowchart LR
 
     %% ============================================================
     %% Top-level external inputs (outside subgraphs)
     %% ============================================================
-    subgraph ExternalInputs["x"]
+    subgraph ExternalInputs["xx"]
         direction TB
         style ExternalInputs fill:none,stroke:none
         L3_ECMP_GROUP_HIER["L3_ECMP_GROUP_HIER"]
@@ -100,7 +100,7 @@ flowchart TB
 
     %% --- DLB ID generation ---
     ECMP_GROUP_DLB_ID_OFFSET["ECMP_GROUP_DLB_ID_OFFSET"]
-    L3_ECMP -->|QualityProfile (6b)| DLB_PORT_QUALITY_PROFILE
+    L3_ECMP -->|QualityProfile 6b| DLB_PORT_QUALITY_PROFILE
     L3_ECMP_GROUP_COUNT --> ECMP_GROUP_DLB_ID_OFFSET
     ECMP_GROUP_DLB_ID_OFFSET --> DLB_ID_GEN
 
