@@ -5,7 +5,7 @@ flowchart TB
     %% ============================================================
     %% Top-level external inputs (outside subgraphs)
     %% ============================================================
-    subgraph ExternalInputs[" "]
+    subgraph ExternalInputs["x"]
         direction TB
         style ExternalInputs fill:none,stroke:none
         L3_ECMP_GROUP_HIER["L3_ECMP_GROUP_HIER"]

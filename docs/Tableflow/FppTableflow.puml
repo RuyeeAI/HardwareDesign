@@ -1,0 +1,164 @@
+@startuml
+title 微服务架构组件图
+left to right direction
+package IPRS{
+  [IPRS0]
+  [IPRS1]
+  IPRS0-->IPRS1
+}
+
+package IMA0 {
+  [IMA0_MATCH] as IM0
+  [IMA0_ACTION] as IA0
+  [IPAT] as IPAT
+  package IMH{
+  [ICIB]
+  [IVSI1]
+  [MyStation\n TCAM] as MyStation0
+  [SysMAC]
+  [VRRP]
+  [IMSTP]
+  [VSI_PROFILE]
+  }
+  [VACL]
+
+  IM0-->IPAT
+  IM0-->ICIB
+  IM0-->VACL
+  VACL-->IVSI1:VSI
+  ICIB-->IVSI1:VSI
+  IVSI1 -->SysMAC
+  [IVSI1]-->MyStation0
+  MyStation0-->VRRP:Opcode,VRRPIndex
+  VRRP-->IA0
+  SysMAC-->IA0
+  IPAT-->IA0
+  IVSI1-->IMSTP:STGID,LLSP
+  IMSTP-->IA0:IMSTP_Status
+  IVSI1-->VSI_PROFILE:Profile
+  VSI_PROFILE-->IA0:unucCtrl
+}
+
+package IMA1{
+  [IMA1_MATCH] as IM1
+  [IMA1_ACTION] as IA1
+  [TT1] as TT1
+  [TT2] as TT2
+  [IVSI2] as IVSI2
+  [MyStation\n TCAM] as MyStation1
+  [VRRP] as VRRP2
+  [VSI_PROFILE] as VSI_PROFILE2
+  [SVP]
+  [IPRS1_FIFO]
+  IPRS1-->IPRS1_FIFO
+
+  IM1-->TT1
+  IM1-->TT2
+  TT1-->IVSI2
+  TT2-->IVSI2
+  IVSI2-->MyStation1
+  TT1-->SVP
+  SVP-->IA1
+  IPRS1_FIFO-->IA1
+  MyStation1-->VRRP2
+  VRRP2-->IA1
+  IVSI2-->VSI_PROFILE2
+  VSI_PROFILE2-->IA1
+
+}
+
+
+
+package FWDM{
+  [FWDM Banks]
+}
+
+
+package IMA2{
+  [IMA2_MATCH] as IM2
+  [IMA2_ACTION] as IA2
+  [BA]
+  [HTAG]
+  [SKT]
+  [IPAT_POST] as IPAT_POST
+  [SPA]
+ package FSE0{
+   [FIB]
+   [VPN Crossing] as VPNC
+   [L2BE]
+ }
+
+ package FSE1{
+   [EMACL]
+   [FlowTable]
+   [IFP Compress] as IFPC
+ }
+  IM2-->BA
+  IM2-->HTAG
+  IM2-->SKT
+  IM2-->IPAT_POST
+  IM2-->SPA
+
+  BA-->IA2
+  HTAG-->IA2
+  SKT-->IA2
+  IPAT_POST-->IA2
+  SPA-->IA2
+
+  IM2-->FSE0
+  IM2-->FSE1
+  FSE0<-->[FWDM Banks]
+  FSE1<-->[FWDM Banks]
+  FSE0-->IA2
+  FSE1-->IA2
+}
+
+package IMA3{
+  [IMA3_MATCH] as IM3
+  [IMA3_ACTION] as IA3
+  [IACL]
+
+  IA2-->IM3
+  IM3-->IACL
+  IACL-->IA3
+}
+
+package IMA4{
+  [IMA4_MATCH] as IM4
+  [IMA4_ACTION] as IA4
+  [L1_ECMP_GROUP] as L1EG
+  [L2_ECMP_GROUP] as L2EG
+  [L1_ECMP] as L1E
+  [L2_ECMP] as L2E
+  [DVP]
+  [FLC]
+  [LB]
+  [IAC]
+  [SAMPLE]
+
+  IA3-->IM4
+  IM4--> L1EG
+  L1EG-->L1E
+  L1E-->DVP
+  DVP-->L2EG
+  L2EG-->L2E
+  L2E-->DLB
+
+
+}
+
+
+
+
+
+
+IPRS0-->IM0
+IA0-->IM1
+IA1-->IM2
+
+
+
+
+
+
+@enduml

@@ -1,0 +1,59 @@
+@startuml
+title 微服务架构组件图
+
+package "前端层" {
+  [Web前端] as Web
+  [移动端APP] as Mobile
+}
+
+package "网关层" {
+  [API Gateway] as Gateway
+}
+
+package "服务层" {
+  [用户服务] as UserService
+  [订单服务] as OrderService
+  [商品服务] as ProductService
+  [支付服务] as PaymentService
+}
+
+package "基础设施层" {
+  [认证中心] as Auth
+  [配置中心] as Config
+  [服务注册中心] as Registry
+}
+
+database "MySQL集群" {
+  [用户数据库]
+  [订单数据库]
+  [商品数据库]
+}
+
+cloud "第三方服务" {
+  [微信支付]
+  [阿里云OSS]
+}
+
+Web --> Gateway
+Mobile --> Gateway
+
+Gateway --> UserService
+Gateway --> OrderService
+Gateway --> ProductService
+
+OrderService --> PaymentService
+PaymentService --> [微信支付]
+
+UserService --> Auth
+OrderService --> Auth
+
+UserService --> Registry
+OrderService --> Registry
+ProductService --> Registry
+PaymentService --> Registry
+
+UserService --> [用户数据库]
+OrderService --> [订单数据库]
+ProductService --> [商品数据库]
+
+@enduml
