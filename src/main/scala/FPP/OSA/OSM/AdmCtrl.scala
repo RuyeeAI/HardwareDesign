@@ -17,6 +17,8 @@ class AdmCtrl(config: OSAConfig) extends GenModule {
     val done       = Flipped(Vec(config.maxNewPktPerCycle, Valid(new PktAssemblyDone)))
     val occupancy  = Input(Vec(config.portCount, UInt(config.bufAddrWidth.W)))
     val thresholds = Input(Vec(config.portCount, new PortThresholds))
+    // 每个 context 当前报文的首段缓冲地址（来自 BufWrPath），用于填 PacketDesc.bufBase
+    val ctxStart   = Input(Vec(config.ctxPool, UInt(config.bufAddrWidth.W)))
     val fwd        = Output(Vec(config.maxNewPktPerCycle, Valid(new PacketDesc)))
     val rollback   = Output(Vec(config.maxNewPktPerCycle, Valid(new RollbackInfo)))
     val bpEvent    = Output(Bool())
@@ -45,7 +47,8 @@ class AdmCtrl(config: OSAConfig) extends GenModule {
     io.fwd(i).bits.macHeader := d.bits.macHeader
     io.fwd(i).bits.byteCount := d.bits.byteCount
     io.fwd(i).bits.segCount  := d.bits.segCount
-    io.fwd(i).bits.bufBase   := 0.U          // set by write path / desc queue
+    // 报文首地址：context = portId * ctxPerPort + slotId
+    io.fwd(i).bits.bufBase   := io.ctxStart(d.bits.portId * config.ctxPerPort.U + d.bits.slotId)
     io.fwd(i).bits.orgQindex := d.bits.orgQindex
     io.fwd(i).bits.priClass  := d.bits.priClass
     io.fwd(i).bits.err       := d.bits.err

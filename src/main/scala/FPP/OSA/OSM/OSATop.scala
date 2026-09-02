@@ -12,9 +12,13 @@ import BaseCbb.data.GenModule
  *   BufWrPath -> BufRam -> BufRdCtrl -> CellAsm -> EgressScheduler
  *   BpGen (backpressure to MAC); two LoopbackMemory ports feed the egress.
  *
- * v1 notes: the read side is driven by a simple read-base counter (descriptor
- * driven scheduling and bank-conflict deferral are TODO); per-port occupancy
- * is write-accumulated (read decrement TODO).
+ * v2 notes: the read side is descriptor-driven — DescQueue supplies
+ * {bufBase, segCount} to the read scheduler, so reads are packet-aligned and
+ * per-port occupancy is decremented when segments leave the buffer (v1 used a
+ * free-running read-base counter plus a global inFlight estimate, and never
+ * decremented occupancy, which latched backpressure permanently).
+ * Still TODO: buffer rollback on drop (AdmCtrl.rollback is counted but the
+ * write pointer is not rewound), bank-conflict deferral on the write path.
  */
 class OSATop(config: OSAConfig) extends GenModule {
   val io = IO(new Bundle {
@@ -73,6 +77,8 @@ class OSATop(config: OSAConfig) extends GenModule {
 
   val wrPath = Module(new BufWrPath(config))
   wrPath.io.segs := segDemux.io.segs
+  // 描述符的 bufBase 来自写路径锁存的每 context 首地址（必须在 wrPath 之后连接）
+  adm.io.ctxStart := wrPath.io.ctxStart
 
   val bufRam = Module(new BufRam(config))
   bufRam.io.wrReq := VecInit(wrPath.io.bankWe zip wrPath.io.bankAddr zip wrPath.io.bankData zip
@@ -85,32 +91,61 @@ class OSATop(config: OSAConfig) extends GenModule {
 
   val descQ = Module(new DescQueue(config))
   descQ.io.enq := adm.io.fwd
-  descQ.io.deq.ready := false.B   // v1: descriptor-driven read scheduling is TODO
 
-  // ---- read-side datapath (v1: simple read-base counter) -------------------
-  // Reads only proceed while there is unread data (inFlight > 0), so the
-  // OSA never reads un-written addresses and the loopback ports can use the
-  // egress when the network has nothing to send.
+  // ---- read-side datapath (v2: descriptor-driven) --------------------------
+  // 读地址来自描述符的 bufBase，一次读走一个报文（24 段/拍，尾拍按剩余段数截断）。
+  // 描述符在 EOP + 优先级就绪后才入队，其数据必然已全部写入缓冲，因此不再需要
+  // 全局 inFlight 估计去猜“有没有数据可读”——那套估计既无法归属端口，
+  // 也无法给出报文边界。没有描述符时读侧静默，环回口即可占用空闲出口带宽。
   val rd = Module(new BufRdCtrl(config))
-  val rdBase = RegInit(0.U(config.bufAddrWidth.W))
-  val wrTotal = RegInit(0.U(32.W))
-  val rdTotal = RegInit(0.U(32.W))
-  // 回绕安全判据：两计数器同宽回绕取模差；只要在途段数 < 2^31 恒正确
-  //（旧的 wrTotal > rdTotal 直接比较在计数器回绕后会翻转）
-  val inFlight = wrTotal - rdTotal
-  val rdAvail  = inFlight =/= 0.U
-  rd.io.rdBase := rdBase
-  rd.io.rdEn := io.cellOut.ready && rdAvail
-  rd.io.wrMask := wrPath.io.bankWe.asUInt
-  when(rd.io.rdEn) { rdBase := rdBase + config.outSegPerBeat.U }
+  val SEGS = config.outSegPerBeat                 // 24
+  val segW = log2Ceil(SEGS + 1)                   // 5 bits (0..24)
+  val segsFull = SEGS.U(segW.W)
+
+  val curValid  = RegInit(false.B)
+  val curDesc   = Reg(new PacketDesc)
+  val curBase   = Reg(UInt(config.bufAddrWidth.W))
+  val curRemain = Reg(UInt(16.W))
+  val curFirst  = RegInit(false.B)
+
+  val segsThisBeat = Mux(curRemain > SEGS.U, segsFull, curRemain(segW - 1, 0))
+
+  descQ.io.deq.ready := !curValid
+  when(descQ.io.deq.fire) {
+    curValid  := true.B
+    curDesc   := descQ.io.deq.bits
+    curBase   := descQ.io.deq.bits.bufBase
+    curRemain := descQ.io.deq.bits.segCount
+    curFirst  := true.B
+  }
+
+  rd.io.rdBase   := curBase
+  rd.io.rdEn     := curValid && io.cellOut.ready
+  rd.io.segLimit := segsThisBeat
+  rd.io.lastBeat := curRemain <= SEGS.U
+  rd.io.wrMask   := wrPath.io.bankWe.asUInt
+
+  when(rd.io.rdEn) {
+    curBase   := curBase + SEGS.U
+    curRemain := curRemain - segsThisBeat
+    curFirst  := false.B
+    when(curRemain <= SEGS.U) { curValid := false.B }
+  }
+
+  // 读数据比发起晚一拍，描述符与“读出量”同样打一拍对齐到数据返回时刻
+  val rdPop    = RegNext(rd.io.rdEn, false.B)
+  val rdDescD  = RegNext(curDesc)
+  val rdFirstD = RegNext(curFirst)
+  val rdSegsD  = RegNext(segsThisBeat)
 
   bufRam.io.rdReq := rd.io.rdReq
   rd.io.rdResp := bufRam.io.rdResp
 
   val cell = Module(new CellAsm(config))
-  cell.io.rdData := rd.io.rdData
-  cell.io.desc.valid := false.B
-  cell.io.desc.bits := 0.U.asTypeOf(new PacketDesc)
+  cell.io.rdData    := rd.io.rdData
+  cell.io.desc.valid := rdPop
+  cell.io.desc.bits := rdDescD
+  cell.io.firstBeat := rdFirstD
 
   // ---- egress: strict priority OSA + work-conserving loopbacks -------------
   val loop0 = Module(new LoopbackMemory(config))
@@ -144,7 +179,7 @@ class OSATop(config: OSAConfig) extends GenModule {
 
   io.cellOut <> eg.io.out
 
-  // ---- occupancy (v1: write-accumulated; read decrement TODO) ----------------
+  // ---- occupancy: 写入累加，段读出缓冲时按端口递减 --------------------------
   val occ = RegInit(VecInit(Seq.fill(config.portCount)(0.U(config.bufAddrWidth.W))))
   // per-port write count chain (position-ordered, no combinational loop)
   val cntChain = Seq.fill(config.segmentsPerCycle + 1)(Wire(Vec(config.portCount, UInt(5.W))))
@@ -157,16 +192,14 @@ class OSATop(config: OSAConfig) extends GenModule {
     }
   }
   for (p <- 0 until config.portCount) {
-    occ(p) := occ(p) + cntChain(config.segmentsPerCycle)(p)
+    val inc  = cntChain(config.segmentsPerCycle)(p)
+    // 读出口按端口归属递减（v1 只增不减，一旦越过门限反压就再也不会释放）
+    val dec  = Mux(rdPop && rdDescD.portId === p.U, rdSegsD, 0.U(config.bufAddrWidth.W))
+    val next = occ(p) + inc
+    // 饱和到 0：写冲突丢段等异常下宁可少计，也不要回绕成天文数字
+    occ(p) := Mux(next >= dec, next - dec, 0.U(config.bufAddrWidth.W))
     io.occupancy(p) := occ(p)
   }
-  // 每拍写入段数 = 各端口计数求和。
-  //（注意不能用 Vec.asUInt —— 那是位拼接：port1 计 1 会表现为 32 而非 1）
-  val wrBeat = cntChain(config.segmentsPerCycle).reduce(_ + _)
-
-  // read/write progress counters (drive inFlight/rdAvail, wrap-safe)
-  when(wrBeat =/= 0.U) { wrTotal := wrTotal + wrBeat }
-  when(rd.io.rdEn)     { rdTotal := rdTotal + config.outSegPerBeat.U }
   adm.io.occupancy := occ
 
   // ---- backpressure ----------------------------------------------------------
@@ -190,7 +223,11 @@ class OSATop(config: OSAConfig) extends GenModule {
   ctxAlloc.io.release := rel
 
   io.wrConflictCnt := wrPath.io.wrConflictCnt
-  io.descCount := descQ.io.count
+  // descCount = 队列里的 + 正在被读调度器处理的那一个（后者仍占用着缓冲）
+  for (p <- 0 until config.portCount) {
+    io.descCount(p) := descQ.io.count(p) +
+      Mux(curValid && curDesc.portId === p.U, 1.U, 0.U)
+  }
   // drop counter: any rollback request from admission control
   val dropCnt = RegInit(0.U(16.W))
   when(adm.io.rollback.map(_.valid).reduce(_ || _)) {

@@ -18,6 +18,9 @@ class BufRdCtrl(config: OSAConfig) extends GenModule {
   val io = IO(new Bundle {
     val rdBase = Input(UInt(config.bufAddrWidth.W))  // next read address (packet payload)
     val rdEn   = Input(Bool())                       // egress wants a beat
+    // 本拍有效段数（<= N）：报文尾拍按实际剩余段数截断，避免越界读到下一个报文
+    val segLimit = Input(UInt(log2Ceil(config.outSegPerBeat + 1).W))
+    val lastBeat = Input(Bool())                    // 本拍是该报文的最后一拍（尾拍产生 isEOP）
     val wrMask = Input(UInt(config.banks.W))         // banks written this cycle (write-priority)
     val rdReq  = Output(Vec(config.banks, Valid(new BankRdReq(config))))
     val rdResp = Flipped(Vec(config.banks, Valid(new BankRdResp(config))))
@@ -36,7 +39,7 @@ class BufRdCtrl(config: OSAConfig) extends GenModule {
     reqAddr(i) := io.rdBase + i.U
     reqBank(i) := reqAddr(i) % B.U(config.bufAddrWidth.W)
     reqRow(i)  := (reqAddr(i) / B.U(config.bufAddrWidth.W))(config.bankRowAddrW - 1, 0)
-    reqValid(i) := io.rdEn
+    reqValid(i) := io.rdEn && (i.U < io.segLimit)
   }
 
   // per-bank request mux: at most one segment per bank (consecutive addresses
@@ -51,13 +54,18 @@ class BufRdCtrl(config: OSAConfig) extends GenModule {
   // responses return after 1 cycle, aligned per bank; reassemble by position
   val prevBank = RegNext(reqBank)
   val prevValid = RegNext(reqValid)
+  val prevLimit = RegNext(io.segLimit)
+  val prevLast  = RegNext(io.lastBeat, false.B)
   for (i <- 0 until N) {
     io.rdData.bits.segs(i).data   := io.rdResp(prevBank(i)).bits.data
     io.rdData.bits.segs(i).byteEn := 0xFF.U
     io.rdData.bits.segs(i).isSOP  := (i.U === 0.U) && prevValid(i)  // first segment of the beat
-    io.rdData.bits.segs(i).isEOP  := false.B                       // packet boundaries added by CellAsm
+    // 尾拍的最后一个有效段才是报文结束（segLimit == N 的全满拍不一定是尾拍）
+    io.rdData.bits.segs(i).isEOP  := prevLast && prevValid(i) &&
+                                     (i.U === prevLimit - 1.U)
     io.rdData.bits.segs(i).err    := io.rdResp(prevBank(i)).bits.uecErr
-    io.rdData.bits.segs(i).valid  := io.rdResp(prevBank(i)).valid && prevValid(i)
+    io.rdData.bits.segs(i).valid  := io.rdResp(prevBank(i)).valid && prevValid(i) &&
+                                     (i.U < prevLimit)
     io.rdData.bits.segs(i).portId := 0.U
     io.rdData.bits.segs(i).pktId  := 0.U
   }

@@ -29,6 +29,8 @@ class BufWrPath(config: OSAConfig) extends GenModule {
     val bankEop = Output(Vec(config.banks, Bool()))
     val bankBen = Output(Vec(config.banks, UInt(8.W)))
     val wrConflictCnt = Output(UInt(32.W))
+    // 每个 context 当前报文的首段缓冲地址（供 AdmCtrl 填 PacketDesc.bufBase）
+    val ctxStart = Output(Vec(config.ctxPool, UInt(config.bufAddrWidth.W)))
   })
 
   val N = config.segmentsPerCycle
@@ -38,6 +40,8 @@ class BufWrPath(config: OSAConfig) extends GenModule {
   val wrPtr = RegInit(VecInit(Seq.fill(config.portCount)(0.U(config.bufAddrWidth.W))))
   // per-context next write address
   val ctxNext = RegInit(VecInit(Seq.fill(config.ctxPool)(0.U(config.bufAddrWidth.W))))
+  // per-context 当前报文首地址（SOP 段所在地址）
+  val ctxStartReg = RegInit(VecInit(Seq.fill(config.ctxPool)(0.U(config.bufAddrWidth.W))))
 
   def ctxIdx(port: UInt, slot: UInt): UInt = port * config.ctxPerPort.U + slot
 
@@ -47,6 +51,9 @@ class BufWrPath(config: OSAConfig) extends GenModule {
   // ---- per-context next-address chain --------------------------------------
   val ctxChain = Seq.fill(N + 1)(Wire(Vec(config.ctxPool, UInt(config.bufAddrWidth.W))))
   for (c <- 0 until config.ctxPool) ctxChain(0)(c) := ctxNext(c)
+  // 首地址链：SOP 段写入时锁存，其余位置透传
+  val startChain = Seq.fill(N + 1)(Wire(Vec(config.ctxPool, UInt(config.bufAddrWidth.W))))
+  for (c <- 0 until config.ctxPool) startChain(0)(c) := ctxStartReg(c)
 
   val segAddr = Wire(Vec(N, UInt(config.bufAddrWidth.W)))
   val segWe   = Wire(Vec(N, Bool()))
@@ -54,6 +61,7 @@ class BufWrPath(config: OSAConfig) extends GenModule {
   for (pos <- 0 until N) {
     for (p <- 0 until config.portCount) cntChain(pos + 1)(p) := cntChain(pos)(p)
     for (c <- 0 until config.ctxPool) ctxChain(pos + 1)(c) := ctxChain(pos)(c)
+    for (c <- 0 until config.ctxPool) startChain(pos + 1)(c) := startChain(pos)(c)
 
     val seg = io.segs(pos)
     val port = seg.portId
@@ -63,6 +71,7 @@ class BufWrPath(config: OSAConfig) extends GenModule {
         segAddr(pos) := wrPtr(port) + cntChain(pos)(port)
         cntChain(pos + 1)(port) := cntChain(pos)(port) + 1.U
         ctxChain(pos + 1)(idx) := segAddr(pos) + 1.U
+        startChain(pos + 1)(idx) := segAddr(pos)
       }.otherwise {
         segAddr(pos) := ctxChain(pos)(idx)
         cntChain(pos + 1)(port) := cntChain(pos)(port) + 1.U
@@ -78,6 +87,8 @@ class BufWrPath(config: OSAConfig) extends GenModule {
   // commit pointers
   for (p <- 0 until config.portCount) wrPtr(p) := wrPtr(p) + cntChain(N)(p)
   for (c <- 0 until config.ctxPool) ctxNext(c) := ctxChain(N)(c)
+  for (c <- 0 until config.ctxPool) ctxStartReg(c) := startChain(N)(c)
+  io.ctxStart := ctxStartReg
 
   // ---- bank mapping + conflict detection ------------------------------------
   val bankSel = Wire(Vec(N, UInt(log2Ceil(B).W)))

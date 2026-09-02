@@ -2215,3 +2215,33 @@ automatically, so any region size is bank-conflict-free on the write side.
 | 2026-05-17 | v2.0: **Two loopback ports (2 × 300 Gbps) + lane granularity (min 200 Gbps; 8×200G/4×400G/2×800G/1×1.6T)** — audit: 2×96B egress cannot carry OSA 1.6T + loopback 0.6T → egress 3×96B = 2.88 Tbps, banks 44 → 64 (20 W + 36 R; 1760 rows; bank = addr[5:0]). §1.1/§2/§3/§4/§5.1/§6/§8 updated |
 | 2026-05-17 | v2.1: **Loopback data in dedicated TP memories** (2 ports × 8 banks × 32B TP, separate from main buffer) — loopback TP read 256 B/c; TDM frame 128 = 98 OSA + 15 loop0 + 15 loop1 (each loopback 300 Gbps, OSA read 1.764 Tbps); LoopbackMem 32 KB/port; model loop_peak = 32, tests T11–T15 rewritten, 15/15 pass. §3.14/§3.15/§5.1/§6.1/§6.3/§6.5 updated |
 | 2026-05-17 | v2.2: **Egress back to 2 × 96B + work-conserving loopback** — banks 64→44 (20 W + 24 R, 2 × 96B egress); OSA read strict priority on all 24 seg/c (1.6T guaranteed), loopbacks work-conserving token-bucketed at ≤ 300 Gbps each (cap reachable only when OSA ≤ 1.32T; at 1.6T the 320G leftover splits ≈160G each); fixed TDM frame removed; no packet packing inside a 96B unit (unit-aligned packets). Model T11–T15 rewritten, 15/15 pass. §3.10/§3.11/§3.14/§5.1/§6.1/§6.3/§8 updated |
+| 2026-09-03 | v2.3 (RTL 实现跟进): 读侧改为描述符驱动 —— `BufWrPath` 回传每 context 首地址(`ctxStart`) → `AdmCtrl` 填 `PacketDesc.bufBase` → 读调度器按 `bufBase/segCount` 逐包读取(24 段/拍,尾拍按剩余段数截断)。同时修复:per-port occupancy 只在写入时累加、从不在读出时递减(反压一旦触发即永久拉高);`CellAsm.desc` 为悬空输入导致 `portId` 恒 0、`obi.valid` 恒 0;`DescQueue` 同周期同端口多描述符互相覆盖、轮询指针停在空端口上饿死其它端口、`deq.valid` 由 `ready` 门控;`BufRdCtrl` 越界读下一报文区间、`isEOP` 恒 0。新增 3 项测试(占用释放/报文对齐/首拍 OBI),OSASmokeTest 9/9 通过 |
+
+---
+
+## Appendix D: RTL 实现状态与已知差距
+
+本节记录 `src/main/scala/FPP/OSA/OSM` 相对本设计文档的实现程度，**只描述 RTL，不改设计**。
+
+### D.1 已实现
+
+| 模块 | 状态 |
+|------|------|
+| SegDemux / PktCtxAlloc / PprsBank | 完成(位置序分配、SOP 溢出丢弃) |
+| PktAssembler / AdmCtrl | 完成(EOP+优先级就绪后提交,门限丢弃/回退请求) |
+| BufWrPath → BufRam | 完成(44 bank 映射,写冲突计数) |
+| DescQueue | 完成(寄存器 shallow FIFO,depth 16,旋转优先级轮询) |
+| 读调度(OSATop 内) | **描述符驱动**:按 `bufBase`/`segCount` 逐包读,24 段/拍 |
+| BufRdCtrl | 完成(`segLimit`/`lastBeat` 截断与 EOP 生成) |
+| CellAsm | 完成(portId 取自描述符,首拍输出 OBI) |
+| EgressScheduler + LoopbackMemory | 完成(OSA 严格优先 + 令牌桶环回) |
+| 反压 BpGen | 完成(门限 + 滞回) |
+
+### D.2 已知差距(TODO)
+
+1. **丢弃回退未落到写指针上**:`AdmCtrl.rollback` 只被计数(`dropCnt`),`BufWrPath.wrPtr` 没有回退。被丢弃报文占用的缓冲不会被回收,occupancy 会持续累积。需补:按端口聚合 `segCount` 后 `wrPtr(p) -= n`,并同步递减 `occ(p)`。
+2. **写冲突丢段未计入**:`BufWrPath` 检测到 bank 冲突时丢弃低优先级段,但 `cntChain` 仍照常递增,occupancy 与实际入缓冲的段数不一致;读侧会读到旧数据。
+3. **读侧无 bank 冲突检查**:`BufRdCtrl` 依赖"连续地址落在互不相同的 bank"(N < B 时成立),未实现设计文档 §3.10 的 busy-mask / 延迟重发。
+4. **出口未实现 TDM/WRR**:`EgressScheduler` 是严格优先级 + 令牌桶,与设计文档 §3.14 的 TDM 帧 + WRR 不同(见 v2.2 修订),属有意简化。
+5. **环回口为单 bank 简化**:`LoopbackMemory` 未实现 2×8 bank × 32B TP 结构。
+6. **每拍 24 段读但未做多包拼装**:设计文档允许一个 beat 内 tail+head 两个报文,当前实现一拍只服务一个报文(尾拍不填满)。

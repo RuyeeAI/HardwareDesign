@@ -9,7 +9,8 @@ import org.scalatest.flatspec.AnyFlatSpec
  *
  * Covers: packet write->read loopback (data integrity), continuous multi-packet
  * flow, loopback port egress (work-conserving), min-size drop, lossy admission
- * drop, and per-port occupancy growth.
+ * drop, per-port occupancy growth and release, descriptor-driven packet
+ * alignment, and OBI emission on the first beat.
  *
  * Runs on the Verilator backend (VerilatorBackendAnnotation).
  *
@@ -193,6 +194,95 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
       for (_ <- 0 until 12) dut.clock.step(1)
       assert(dut.io.dropCnt.peek().litValue == 0, "no drop when thresholds are high")
       assert(dut.io.descCount(0).peek().litValue >= 1, "packet should be admitted")
+    }
+  }
+
+  it should "release per-port occupancy when a packet is read out" in {
+    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
+      pokeIdle(dut)
+
+      injectPacket(dut, 0, 20, 1)
+      dut.clock.step(1)
+      pokeIdle(dut)
+      for (_ <- 0 until 8) dut.clock.step(1)
+
+      val occWritten = dut.io.occupancy(0).peek().litValue
+      assert(occWritten == 20, s"occupancy should be 20 after write, got $occWritten")
+
+      // 读出口后占用必须回落，否则反压一旦触发就永久拉高（v1 缺陷）
+      dut.io.cellOut.ready.poke(true.B)
+      for (_ <- 0 until 16) dut.clock.step(1)
+      val occAfter = dut.io.occupancy(0).peek().litValue
+      assert(occAfter == 0, s"occupancy should return to 0 after read-out, got $occAfter")
+    }
+  }
+
+  it should "keep each packet aligned to its own buffer base" in {
+    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
+      pokeIdle(dut)
+
+      injectPacket(dut, 0, 20, 0)      // packet A: data 0..19
+      dut.clock.step(1)
+      injectPacket(dut, 0, 20, 0x40)   // packet B: data 0x40..0x53
+      dut.clock.step(1)
+      pokeIdle(dut)
+      for (_ <- 0 until 8) dut.clock.step(1)
+
+      dut.io.cellOut.ready.poke(true.B)
+      var beats = 0
+      var sawA = false
+      var sawB = false
+      for (_ <- 0 until 48) {
+        dut.clock.step(1)
+        if (dut.io.cellOut.valid.peek().litToBoolean) {
+          beats += 1
+          val i = beats
+          if (i == 1) {
+            sawA = true
+            for (u <- 0 until 2; s <- 0 until 12) {
+              val k = u * 12 + s
+              if (k < 20) dut.io.cellOut.bits.units(u).data(s).expect(k.U)
+            }
+          } else if (i == 2) {
+            sawB = true
+            for (u <- 0 until 2; s <- 0 until 12) {
+              val k = u * 12 + s
+              if (k < 20) dut.io.cellOut.bits.units(u).data(s).expect((0x40 + k).U)
+            }
+          }
+        }
+      }
+      assert(sawA, "first beat should carry packet A")
+      // v1 用自由运行读地址（每拍 +24），第二个报文的数据起点是 20 而不是 24，会被读错位
+      assert(sawB, "second beat should carry packet B starting at its own base")
+    }
+  }
+
+  it should "carry portId and OBI on the first beat of a packet" in {
+    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
+      pokeIdle(dut)
+
+      injectPacket(dut, 3, 20, 1)
+      dut.clock.step(1)
+      pokeIdle(dut)
+      for (_ <- 0 until 8) dut.clock.step(1)
+
+      dut.io.cellOut.ready.poke(true.B)
+      var found = false
+      for (_ <- 0 until 24) {
+        dut.clock.step(1)
+        if (dut.io.cellOut.valid.peek().litToBoolean && !found) {
+          found = true
+          dut.io.cellOut.bits.portId.expect(3.U)
+          dut.io.cellOut.bits.obi.valid.expect(true.B)
+          dut.io.cellOut.bits.obi.bits.portId.expect(3.U)
+          dut.io.cellOut.bits.obi.bits.byteCount.expect(160.U)   // 20 seg x 8B
+        }
+      }
+      assert(found, "first beat should carry OBI")
     }
   }
 }
