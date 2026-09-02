@@ -4,6 +4,21 @@ project/project
 project/target
 *.log
 
+# Chisel/FIRRTL 生成物与仿真产物（可由 EmitXxx / sbt test 重新生成）
+out/
+test_run_dir/
+generated/
+build/
+.bsp/
+*.v
+*.fir
+*.anno.json
+*.zip
+
+# 大体积参考资料（按需放 docs/ 并手动 git add -f）
+*-飞书云文档.html
+Mermaid-Syntax-Reference.md
+
 # IDEA
 .idea/
 *.iml
@@ -19,6 +34,13 @@ project/target
 *.class
 *.jar
 /*.scala-*/
+
+# Python
+__pycache__/
+*.pyc
+
+# WorkBuddy 本地记忆
+.workbuddy/
 
 # macOS
 .DS_Store

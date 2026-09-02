@@ -1,84 +1,76 @@
 # HardwareDesign 基础电路单元库 (Chisel 版本)
 
-这个工程使用 Chisel 硬件构造语言实现了数字IC设计中常用的基础电路单元。
+使用 [Chisel](https://github.com/chipsalliance/chisel3) 硬件构造语言实现数字 IC 设计中常用的
+基础电路单元、存储子系统、寄存器框架与网络处理模块。
 
-## 目录结构
+## 环境
 
-```
-HardwareDesign/
-├── build.sbt                                      # sbt 构建配置
-├── README.md                                      # 本说明文件
-├── docs/寄存器编写指导.md                          # ★ RegCbb_v2 寄存器编写与外围逻辑连接指导
-└── src/
-    └── main/
-        └── scala/
-            ├── BaseCbb/RegCbb_v2/                  # ★ 新版寄存器文件框架（DSL + RTL + 生成器 + Demo）
-            │   ├── dsl/                            #   定义 DSL（字段级 + RegBundle）与地址分配
-            │   ├── hw/                             #   RegFileTop / AXI 包装器 / RegView
-            │   ├── gen/                            #   JSON / C 头 / Markdown / HTML 生成器
-            │   └── demo/                           #   UART Demo（EmitAll 一键生成到 generated/RegCbb_v2/）
-            ├── basic/
-            │   └── BasicCells.scala               # 基础门级单元
-            ├── arithmetic/
-            │   └── ArithmeticUnits.scala          # 算术运算单元
-            └── sequential/
-                └── SequentialUnits.scala          # 时序电路单元
+- sbt 1.9+（Scala 2.13.12 / Chisel 3.6.1 / chiseltest 0.6.2）
+- 仿真后端：verilator（`src/test` 中的 wrap 级测试需要；纯 Scala 侧测试无额外依赖）
+
+## 快速上手
+
+```bash
+sbt test                        # 全量回归（41+ suites）
+sbt "runMain BaseCbb.memory.EmitMemVerilog"   # 生成示例 SRAM Verilog 到 generated/
 ```
 
-## 使用方法
+所有 `EmitXxx` 入口的产物统一写入 `generated/`（已 gitignore，可随时重新生成）。
 
-1. 确保你已经安装了 `sbt` 构建工具
+## 模块索引
 
-2. 生成Verilog代码示例，在sbt shell中运行：
-```sbt
-runMain basic.Inv
-```
-这会生成反相器的Verilog代码到 `generated/` 目录
+### BaseCbb — 基础电路单元库（`src/main/scala/BaseCbb/`）
 
-3. 运行测试（需要添加chiseltest）：
-```sbt
-test
-```
+| 子包 | 内容 |
+|------|------|
+| `basic/` | 门级单元（Inv/And/Nand/Mux/译码器/DFF/锁存器/AOI）、时序单元、分频器 |
+| `math/` | 加法器/乘法器/移位器、前缀和、CRC/LFSR/Checksum、压缩网络、计数器 |
+| `misc/` | LatencyPipe、DelayQueue、ShiftQueue、ReorderQueue、Shaper、Timer 等数据通路小件 |
+| `memory/` | SRAM 封装（Sp/Tp Wrap/Wrap3，含 ECC/Parity、DFX、CPU 访问）、位图、链表、IDPool |
+| `fifo/` | 同步/异步 FIFO（多存储后端） |
+| `async/` | CDC 同步器、脉冲同步、异步复位同步（行为级原语 + desiredName 供后端替换） |
+| `arbiter/` | RR/WRR/iSLIP 仲裁器 |
+| `data/` | GenModule/GenBundle 基类、Record 容器 |
+| `io/` | 主机侧文件/JSON/随机工具 |
+| `annotation/` `Area/` `Clos/` | 后端注解、面积估算、Benes Clos 网络 |
+| `RegCbb/` | ★ 寄存器框架：DSL 定义 → 地址分配 → RTL → JSON/C 头/Markdown/HTML 生成 |
 
-## 已包含单元列表
+### FPP — 网络处理（`src/main/scala/FPP/`）
 
-### 基础门级单元 (`basic/BasicCells.scala`)
-- Inv: 反相器
-- Buf: 缓冲器
-- And2/And3: 二/三输入与门
-- Nand2/Nand3: 二/三输入与非门
-- Or2/Nor2/Nor3: 或门、或非门
-- Xor2/Xnor2: 异或门、同或门
-- Mux2/Mux2N: 一比特/N比特二选一多路选择器
-- Dec2/Dec3: 2-4、3-8译码器
-- DLatch: D锁存器
-- DFF/DFFAsyncRst/DFFSyncRst: D触发器（支持异步/同步复位）
-- HalfAdd/FullAdd: 半加器、全加器
-- SRLatch: SR锁存器
-- ClockGating: 时钟门控单元
-- AOI22/AOI32: 与或非门
+- `Parser/`：多协议报文头解析流水线（ETH/VLAN/MPLS/IPv4/IPv6/TCP/UDP/GRE/隧道等）
+- `OSA/OSM/`：输出侧调度/组包（分段、上下文分配、缓存、信元组装、出口调度、反压）
 
-### 算术运算单元 (`arithmetic/ArithmeticUnits.scala`)
-- RippleCarryAdder: N位逐位进位加法器
-- CarrySelectAdder: N位进位选择加法器
-- Subtractor: N位减法器
-- AddSub: N位可配置加减法器
-- Comparator: N位比较器
-- Multipler: 行为级乘法器
-- LeftShifter/RightShifter: 左/右移位器（支持算术移位）
+### 其他
 
-### 时序电路单元 (`sequential/SequentialUnits.scala`)
-- Register: N位同步寄存器
-- RegFile1R1W/RegFile2R1W: 1读1写/2读1写寄存器堆
-- UpCounter: 二进制递增计数器
-- ModNCounter: 模N计数器
-- ClkDiv2: 二分频
-- ClkDivOdd: 任意奇数分频（50%占空比）
-- ClkDiv: 通用整数分频
-- SyncFifo: 同时钟域FIFO
-- FsmTemplate: 三段式有限状态机模板
+- `Feishu/`：飞书开放平台客户端（需本地 `feishu.conf`，参见 `feishu.conf.example`）
+- `ImpulseGenerator/`：受控脉冲发生器
 
-## 依赖
+## 文档
 
-- Chisel 3.5+
-- Scala 2.13+
+- `docs/BaseCbb_设计文档/` — 按子包的设计说明与《功能重复分析与修改建议》
+- `docs/BaseCbb/RegCbb/docs/寄存器编写指导.md` — RegCbb 寄存器编写与外围逻辑连接指导
+- `docs/OSA.md` / `docs/PreParser.md` — FPP 各模块设计
+- `docs/工程优化建议_2026-08-28.md` — 全工程评审与优化记录
+
+## 已包含单元（节选）
+
+### 基础门级 / 时序（`basic/`）
+Inv、Buf、And2/3、Nand2/3、Or2/Nor2/3、Xor2/Xnor2、Mux2/Mux2N、Dec2/Dec3、
+DLatch、DFF（异步/同步复位）、半加器/全加器、SR 锁存器、时钟门控、AOI22/32；
+Register、RegFile1R1W/2R1W、Up/ModN 计数器、ClkDiv2/ClkDivOdd/ClkDiv、SyncFifo、三段式 FSM 模板。
+
+### 算术（`math/`）
+RippleCarry/CarrySelect 加法器、减法器、AddSub、比较器、乘法器、移位器；
+前缀和、压缩网络、CRC、LFSR、Checksum。
+
+### 存储（`memory/`）
+SpMemoryWrap/TpMemoryWrap（插拍流水）、Sp/TpMemoryWrap3（ECC/Parity + 初始化 + CPU 访问 + 错误注入）、
+SimMemory、位图/链表/IDPool。
+
+### 寄存器（`RegCbb/`）
+字段级 DSL（RO/RW/W1C/W1S/W1T/RC/RS）、原子多字寄存器、AXI-Lite 适配、
+一键生成 JSON / C 头 / Markdown / HTML 寄存器文档（demo 见 `RegCbb/demo/UartDemo.scala`）。
+
+## CI
+
+`.github/workflows/ci.yml` 在 push/PR 时运行 `sbt -batch test`。
