@@ -1,4 +1,14 @@
 ```mermaid
-flowchart LR
 
+```
+
+```plantuml
+    [SS]
+    [TT]
+    SS-->TT
+```
+
+```plantuml
+    (XX)
+    
 ```

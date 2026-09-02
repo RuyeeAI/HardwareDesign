@@ -126,16 +126,18 @@ package IMA3{
 package IMA4{
   [IMA4_MATCH] as IM4
   [IMA4_ACTION] as IA4
+  package LB{
   [L1_ECMP_GROUP] as L1EG
   [L2_ECMP_GROUP] as L2EG
   [L1_ECMP] as L1E
   [L2_ECMP] as L2E
   [DVP]
-  [FLC]
-  [LB]
+  [DLB]
+  (NHI_Selection)
+  }
   [IAC]
   [SAMPLE]
-
+  [FLC]
   IA3-->IM4
   IM4--> L1EG
   L1EG-->L1E
@@ -143,10 +145,23 @@ package IMA4{
   DVP-->L2EG
   L2EG-->L2E
   L2E-->DLB
-
-
+  DLB-->NHI_Selection
+  L2E-->NHI_Selection
+  L1E-->NHI_Selection
+  L1E-->DLB
+  LB-->FLC
+  IM4-->FLC
+  IM4-->IAC
+  IM4-->SAMPLE
+  FLC-->IA4
+  NHI_Selection-->IA4
+  SAMPLE-->IA4
+  IAC-->IA4
 }
 
+package IPM{
+  IA4-->IPM
+}
 
 
 
