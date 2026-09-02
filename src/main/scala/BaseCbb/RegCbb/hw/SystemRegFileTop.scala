@@ -58,10 +58,10 @@ class SystemRegFileTop(sysMap: SystemMap, addrWidth: Int = 32, dataWidth: Int = 
   // ---------------- 用户连接面：全系统平铺透传 ----------------
   sysMap.allRegsAbsolute.foreach { ra =>
     val name = ra.reg.name
-    val outer = io.user.elements(name).asInstanceOf[RegCoreIO]
+    val outer = io.user.elements(name).asInstanceOf[RegUserIO]
     val inner = moduleTops
       .find(_._1.allRegs.exists(_.reg.name == name))
-      .map(_._2.io.user.elements(name).asInstanceOf[RegCoreIO])
+      .map(_._2.io.user.elements(name).asInstanceOf[RegUserIO])
       .getOrElse(sys.error(s"register '$name' not found in any module"))
     CoreConnect(outer, inner)
   }
@@ -131,8 +131,8 @@ class SystemAxiLiteRegFile(sysMap: SystemMap, addrWidth: Int = 32, dataWidth: In
   sysMap.allRegsAbsolute.foreach { ra =>
     val name = ra.reg.name
     CoreConnect(
-      io.user.elements(name).asInstanceOf[RegCoreIO],
-      inner.io.user.elements(name).asInstanceOf[RegCoreIO])
+      io.user.elements(name).asInstanceOf[RegUserIO],
+      inner.io.user.elements(name).asInstanceOf[RegUserIO])
   }
 
   sysMap.allMemsAbsolute.foreach { ma =>

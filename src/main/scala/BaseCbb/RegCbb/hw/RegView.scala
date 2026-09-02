@@ -43,15 +43,15 @@ class FieldHandle(reg: RegHandle, fa: FieldAllocation) {
   def value: UInt = reg.value(hi, bitOffset)
 
   /** RO 字段驱动端口（真实 Input，可直接 `:=` 赋值） */
-  def roValue: UInt = fieldInput(reg.core.roValue, name)
+  def roValue: UInt = fieldInput(reg.core.ro.value, name)
   /** W1C/RC 字段置位端口（电平，或 1） */
-  def hwSet: UInt = fieldInput(reg.core.hwSet, name)
+  def hwSet: UInt = fieldInput(reg.core.hwSet.bits, name)
   /** W1S/RS 字段清除端口（电平，与 0） */
-  def hwClr: UInt = fieldInput(reg.core.hwClr, name)
+  def hwClr: UInt = fieldInput(reg.core.hwClr.bits, name)
   /** W1T 字段翻转端口（电平，异或） */
-  def hwTog: UInt = fieldInput(reg.core.hwTog, name)
+  def hwTog: UInt = fieldInput(reg.core.hwTog.bits, name)
   /** RW 字段硬件直写数据端口（配合 reg.hwWrEn） */
-  def hwWrData: UInt = fieldInput(reg.core.hwWrData, name)
+  def hwWrData: UInt = fieldInput(reg.core.hwWr.data, name)
 
   private def fieldInput(rec: Record, fname: String): UInt =
     rec.elements
@@ -61,7 +61,7 @@ class FieldHandle(reg: RegHandle, fa: FieldAllocation) {
       .asInstanceOf[UInt]
 }
 
-class RegHandle(val name: String, val core: RegCoreIO, val alloc: RegAllocation) {
+class RegHandle(val name: String, val core: RegUserIO, val alloc: RegAllocation) {
   def totalBits: Int = alloc.totalBits
   def byteOffset: BigInt = alloc.byteOffset
   def fields: Seq[FieldHandle] = alloc.fieldAllocations.map(fa => new FieldHandle(this, fa))
@@ -73,32 +73,48 @@ class RegHandle(val name: String, val core: RegCoreIO, val alloc: RegAllocation)
   }
   def apply(fname: String): FieldHandle = field(fname)
 
-  def wrEn: Bool = core.wrEn
-  def wrData: UInt = core.wrData
-  def rdEn: Bool = core.rdEn
-  def rdData: UInt = core.rdData
-  def value: UInt = core.value
+  def wrEn: Bool = core.sw.wrEn
+  def wrData: UInt = core.sw.wrData
+  def rdEn: Bool = core.sw.rdEn
+  def rdData: UInt = core.sw.rdData
+  def value: UInt = core.sw.value
   /** RW 硬件直写使能（寄存器级） */
-  def hwWrEn: Bool = core.hwWrEn
+  def hwWrEn: Bool = core.hwWr.en
+
+  // ---- 统一 Bundle 接口（RegUserIO）的类型化子接口（推荐写法） ----
+  /** 寄存器对用户侧的统一接口 Bundle（按访问类型分组） */
+  def user: RegUserIO = core
+  /** SW→HW 事件视图：regs("x").sw.wrEn / .sw.wrData / .sw.value */
+  def sw: RegSwIO = core.sw
+  /** RO 字段驱动：regs("x").ro.value("fname") := ... */
+  def ro: RoHwIF = core.ro
+  /** W1C/RC 置位：regs("x").hwSet.bits("fname") := ... */
+  def hwSet: HwSetIF = core.hwSet
+  /** W1S/RS 清除：regs("x").hwClr.bits("fname") := ... */
+  def hwClr: HwClrIF = core.hwClr
+  /** W1T 翻转：regs("x").hwTog.bits("fname") := ... */
+  def hwTog: HwTogIF = core.hwTog
+  /** RW 硬件直写：regs("x").hwWr.en := ...；regs("x").hwWr.data("fname") := ... */
+  def hwWr: HwWrIF = core.hwWr
 }
 
 class RegView(map: RegFileMap, user: RegUserRecord) {
   // 用户侧输入默认置 0 / false（父模块作用域内的连接，满足 Chisel "sink not fully
   // initialized" 检查；用户随后对字段的显式连接会覆盖这些默认值）。
-  // 注意：不能用 DontCare —— hwWrEn/hwSet 等会被硬件逻辑消费，DontCare 在仿真中
+  // 注意：不能用 DontCare —— hwWr.en/hwSet.bits 等会被硬件逻辑消费，DontCare 在仿真中
   // 表现为 x，会随机改写寄存器内容。
   map.regs.foreach { a =>
-    val core = user.elements(a.reg.name).asInstanceOf[RegCoreIO]
-    core.hwWrEn := false.B
-    core.roValue.elements.foreach  { case (_, v) => v := 0.U(v.getWidth.W) }
-    core.hwSet.elements.foreach    { case (_, v) => v := 0.U(v.getWidth.W) }
-    core.hwClr.elements.foreach    { case (_, v) => v := 0.U(v.getWidth.W) }
-    core.hwTog.elements.foreach    { case (_, v) => v := 0.U(v.getWidth.W) }
-    core.hwWrData.elements.foreach { case (_, v) => v := 0.U(v.getWidth.W) }
+    val core = user.elements(a.reg.name).asInstanceOf[RegUserIO]
+    core.hwWr.en := false.B
+    core.ro.value.elements.foreach  { case (_, v) => v := 0.U(v.getWidth.W) }
+    core.hwSet.bits.elements.foreach { case (_, v) => v := 0.U(v.getWidth.W) }
+    core.hwClr.bits.elements.foreach { case (_, v) => v := 0.U(v.getWidth.W) }
+    core.hwTog.bits.elements.foreach { case (_, v) => v := 0.U(v.getWidth.W) }
+    core.hwWr.data.elements.foreach { case (_, v) => v := 0.U(v.getWidth.W) }
   }
 
-  private val cores: Map[String, RegCoreIO] =
-    map.regs.map(a => a.reg.name -> user.elements(a.reg.name).asInstanceOf[RegCoreIO]).toMap
+  private val cores: Map[String, RegUserIO] =
+    map.regs.map(a => a.reg.name -> user.elements(a.reg.name).asInstanceOf[RegUserIO]).toMap
   private val byName: Map[String, RegAllocation] =
     map.regs.map(a => a.reg.name -> a).toMap
 

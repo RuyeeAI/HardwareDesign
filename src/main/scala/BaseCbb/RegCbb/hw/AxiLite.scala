@@ -90,8 +90,8 @@ class AxiLiteRegFile(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) 
   map.regs.foreach { a =>
     val name = a.reg.name
     CoreConnect(
-      io.user.elements(name).asInstanceOf[RegCoreIO],
-      inner.io.user.elements(name).asInstanceOf[RegCoreIO])
+      io.user.elements(name).asInstanceOf[RegUserIO],
+      inner.io.user.elements(name).asInstanceOf[RegUserIO])
   }
 
   // 存储器接口透传（外部 SRAM 挂在包装器上）

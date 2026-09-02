@@ -202,11 +202,13 @@ object UartDemoDef {
 /**
  * UART 演示模块（简单总线版本）。
  *
- * 外围逻辑连接要点：
- *  - 写侧（SW→HW）：`when(regs("tx_data_wo").wrEn) { ... regs("tx_data_wo").field("data").wrData ... }`
- *  - 读侧（HW→SW）：`regs("status_ro").field("tx_busy").roValue := txBusy`（RO 驱动）
- *  - 中断（HW→SW）：`regs("irq_w1c").field("tx_done").hwSet := txDonePulse`（硬件置位）
- *  - 读当前值：`regs("ctrl").field("baud_div").value`
+ * 外围逻辑连接要点（★ = 统一 Bundle / 类型化子接口写法，推荐）：
+ *  - 写侧（SW→HW）：★ `regs("tx_data_wo").sw.wrEn` 写脉冲；字段数据用 `.field("data").wrData` 自动位域切割
+ *  - 读当前值：★ `regs("ctrl").sw.value`（全宽）；字段切割用 `.field("baud_div").value`
+ *  - RO 驱动：★ `regs("status_ro").ro.value("tx_busy") := txBusy`（ro 子接口按字段名取端口）
+ *  - 中断置位：★ `regs("irq_w1c").hwSet.bits("tx_done") := txDonePulse`（hwSet 子接口）
+ *  - RW 硬件直写：★ `regs("data64").hwWr.en := ...` / `.hwWr.data("value") := ...`
+ *  - 旧便捷写法（`.wrEn`、`.field("x").roValue`）仍可用（RegHandle/FieldHandle 委托保持兼容）
  */
 class UartDemo extends Module {
   val io = IO(new Bundle {
@@ -238,10 +240,13 @@ class UartDemo extends Module {
   val txShift     = RegInit(0.U(10.W))        // {stop, data[7:0], start}
   val baudCnt     = RegInit(0.U(16.W))
   val bitIdx      = RegInit(0.U(4.W))
-  val baudDiv     = regs("ctrl").field("baud_div").value // 读取 RW 字段当前值
+  // 字段级位域切割（baud_div 占 bit[13:2]）；全宽等价写法：regs("ctrl").sw.value(17, 2)
+  val baudDiv = regs("ctrl").field("baud_div").value
 
-  when(regs("tx_data_wo").wrEn) {              // SW 写入 → 捕获数据并启动发送
-    txShift := Cat(1.U(1.W), regs("tx_data_wo").field("data").wrData, 0.U(1.W))
+  // ★ sw 子接口写事件：wrEn/wrData 同拍（全宽 wrData，data 字段占 bit[7:0]）
+  val txWo = regs("tx_data_wo")
+  when(txWo.sw.wrEn) {
+    txShift := Cat(1.U(1.W), txWo.field("data").wrData, 0.U(1.W)) // 字段数据：自动位域切割
     bitIdx  := 0.U
     txBusy  := true.B
   }
@@ -260,24 +265,27 @@ class UartDemo extends Module {
   }
   io.tx := Mux(txBusy, txShift(0), true.B)    // 空闲高电平
 
-  // ---- RO 驱动（用户逻辑 → 寄存器） ----
-  regs("status_ro").field("tx_busy").roValue := txBusy
-  regs("status_ro").field("tx_done").roValue := RegNext(txDonePulse, false.B)
-  regs("ctrl").field("version").roValue       := 2.U(4.W)
-  regs("rx_data_ro").field("data").roValue    := 0x5A.U(8.W) // 演示固定值
+  // ---- RO 驱动（用户逻辑 → 寄存器）：★ ro 子接口，按字段名的独立端口 ----
+  val statusRo = regs("status_ro")
+  statusRo.ro.value("tx_busy") := txBusy
+  statusRo.ro.value("tx_done") := RegNext(txDonePulse, false.B)
+  regs("ctrl").ro.value("version")      := 2.U(4.W)
+  regs("rx_data_ro").ro.value("data")   := 0x5A.U(8.W) // 演示固定值
 
-  // ---- W1C 硬件置位 ----
-  regs("irq_w1c").field("tx_done").hwSet := txDonePulse
-  regs("irq_w1c").field("rx_rdy").hwSet  := false.B
+  // ---- W1C 硬件置位：★ hwSet 子接口 ----
+  val irqW1c = regs("irq_w1c")
+  irqW1c.hwSet.bits("tx_done") := txDonePulse
+  irqW1c.hwSet.bits("rx_rdy")  := false.B
 
   // ---- RegBundle 寄存器连接 ----
   val linkUp = RegInit(false.B)
-  when(regs("bundle_ctrl").wrEn) { linkUp := regs("bundle_ctrl").field("burst").wrData(0) }
-  regs("bundle_status_ro").field("link_up").roValue := linkUp
-  regs("bundle_scratch_ro").field("bundle_scratch_ro").roValue := 0x7.U(8.W) // 演示：RO 由硬件驱动
+  val bundleCtrl = regs("bundle_ctrl")
+  when(bundleCtrl.sw.wrEn) { linkUp := bundleCtrl.field("burst").wrData(0) }
+  regs("bundle_status_ro").ro.value("link_up") := linkUp
+  regs("bundle_scratch_ro").ro.value("bundle_scratch_ro") := 0x7.U(8.W) // 演示：RO 由硬件驱动
 
-  // ---- 64bit 原子寄存器：硬件直写演示（hwWrEn + hwWrData） ----
-  regs("data64").hwWrEn := false.B  // 默认不写（SW 经 0x1c/0x20 原子访问）
+  // ---- 64bit 原子寄存器：★ hwWr 子接口硬件直写演示 ----
+  regs("data64").hwWr.en := false.B  // 默认不写（SW 经 0x1c/0x20 原子访问）；字段直写：.hwWr.data("value") := ...
 
   // ---- Memory 地址空间：外部 64bit SRAM 挂接（请求-响应协议）----
   // 用户侧逻辑：零延迟响应 —— rd/wr 拉高即获得带宽，同拍返回 ack；status=OK
@@ -315,9 +323,9 @@ class UartDemo extends Module {
   mpWide.ack := mpWide.rd || mpWide.wr
   mpWide.status := MemStatus.OK
 
-  // ---- 中断输出 = 中断状态 & 使能 ----
-  val irqStatus = regs("irq_w1c").value
-  val irqEn     = regs("irq_en").value
+  // ---- 中断输出 = 中断状态 & 使能（★ sw 子接口读全宽当前值） ----
+  val irqStatus = regs("irq_w1c").sw.value
+  val irqEn     = regs("irq_en").sw.value
   io.irq := (irqStatus(0) && irqEn(0)) || (irqStatus(1) && irqEn(1))
 
   // 控制台打印地址布局
@@ -359,10 +367,10 @@ class UartAxiDemo extends Module {
   io.axi.r_resp  := regFile.io.axi.r_resp
   regFile.io.axi.r_ready := io.axi.r_ready
 
-  // 演示：硬件持续置位"接收就绪"中断位
-  regs("irq_w1c").field("rx_rdy").hwSet := true.B
+  // 演示：硬件持续置位"接收就绪"中断位（★ hwSet 子接口）
+  regs("irq_w1c").hwSet.bits("rx_rdy") := true.B
   io.tx := true.B
-  io.irq := regs("irq_w1c").value(1) && regs("irq_en").value(1)
+  io.irq := regs("irq_w1c").sw.value(1) && regs("irq_en").sw.value(1)
 
   // 外部 64bit SRAM 挂接（AXI 总线可经 0x40001000 原子访问；请求-响应协议）
   val sram = Mem(64, UInt(64.W))
@@ -435,14 +443,14 @@ class UartSystemDemo extends Module {
   // GPIO 输出 = out 字段 & dir 字段（演示跨模块寄存器读取）
   io.gpio := gpioCtl.field("out").value & gpioCtl.field("dir").value
 
-  // UART tx 演示：写 tx_data_wo 触发（简化，无真实串口）
+  // UART tx 演示：写 tx_data_wo 触发（简化，无真实串口）；★ sw / ro 子接口
   val txBusy = RegInit(false.B)
-  when(sysRegs.reg("tx_data_wo").wrEn) { txBusy := true.B }
+  when(sysRegs.reg("tx_data_wo").sw.wrEn) { txBusy := true.B }
   when(txBusy) { txBusy := false.B } // 简化：1 拍完成
-  sysRegs.module("uart").reg("status_ro").field("tx_busy").roValue := txBusy
+  sysRegs.module("uart").reg("status_ro").ro.value("tx_busy") := txBusy
 
-  // 硬件置位 GPIO 中断
-  gpioIrq.field("rise").hwSet := RegNext(gpioCtl.field("in").value & ~RegNext(gpioCtl.field("in").value), false.B)
+  // 硬件置位 GPIO 中断：★ hwSet 子接口
+  gpioIrq.hwSet.bits("rise") := RegNext(gpioCtl.field("in").value & ~RegNext(gpioCtl.field("in").value), false.B)
 
   // 外部 SRAM 挂接（uart 模块的 tx_fifo / tx_fifo_plain）
   val sram = Mem(64, UInt(64.W))

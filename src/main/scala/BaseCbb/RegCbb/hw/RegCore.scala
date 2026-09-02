@@ -17,60 +17,94 @@ class DecIO(val dataWidth: Int) extends Bundle {
 class FieldInputRecord(entries: Seq[(String, Int)]) extends Record {
   val elements: ListMap[String, UInt] =
     ListMap(entries.map { case (n, w) => n -> Input(UInt(w.W)) }: _*)
+
+  /** 按字段名取输入端口（该类型无此字段时给出可用字段清单） */
+  def apply(fname: String): UInt =
+    elements.getOrElse(fname,
+      sys.error(s"field '$fname' not found, available: ${elements.keys.mkString(", ")}"))
 }
 
-/**
- * 用户逻辑连接面（每个寄存器一个）。
- *
- * 方向约定（从"寄存器文件所在模块"向外看）：
- *  - SW → HW：wrEn/wrData（写脉冲与数据，同拍有效）、rdEn/rdData（读脉冲与读回数据）、value（当前值，全宽）
- *  - HW → SW（全部为按字段名的独立输入端口，可直接 `:=` 赋值）：
- *      roValue  —— RO 字段驱动
- *      hwSet    —— W1C/RC 字段置位
- *      hwClr    —— W1S/RS 字段清除
- *      hwTog    —— W1T 字段翻转
- *      hwWrData —— RW 字段硬件直写数据（配合 hwWrEn）
- *      hwWrEn   —— RW 硬件直写使能（寄存器级）
- */
-class RegCoreIO(alloc: RegAllocation) extends Bundle {
-  private val totalW = alloc.reg.expandedBits
+// ============================================================================
+// 按访问类型划分的用户侧接口 Bundle
+// ============================================================================
 
+/** SW→HW 事件视图（寄存器 → 用户逻辑，Output）：
+  * wrEn/wrData 写脉冲与数据（同拍）、rdEn/rdData 读脉冲与读回数据、value 当前值（全宽）。
+  */
+class RegSwIO(totalW: Int) extends Bundle {
   val wrEn   = Output(Bool())
   val wrData = Output(UInt(totalW.W))
   val rdEn   = Output(Bool())
   val rdData = Output(UInt(totalW.W))
   val value  = Output(UInt(totalW.W))
+}
 
-  private def fieldEntries(acc: AccessType*): Seq[(String, Int)] =
+/** RO 字段用户侧接口：硬件驱动只读值（软件读回） */
+class RoHwIF(entries: Seq[(String, Int)]) extends Bundle {
+  val value = new FieldInputRecord(entries)
+}
+
+/** W1C/RC 字段用户侧接口：硬件置位（电平或 1） */
+class HwSetIF(entries: Seq[(String, Int)]) extends Bundle {
+  val bits = new FieldInputRecord(entries)
+}
+
+/** W1S/RS 字段用户侧接口：硬件清除（电平与 0） */
+class HwClrIF(entries: Seq[(String, Int)]) extends Bundle {
+  val bits = new FieldInputRecord(entries)
+}
+
+/** W1T 字段用户侧接口：硬件翻转（电平异或） */
+class HwTogIF(entries: Seq[(String, Int)]) extends Bundle {
+  val bits = new FieldInputRecord(entries)
+}
+
+/** RW 字段用户侧接口：硬件直写（en 拉高时 data 覆盖字段，寄存器级使能） */
+class HwWrIF(entries: Seq[(String, Int)]) extends Bundle {
+  val en   = Input(Bool())
+  val data = new FieldInputRecord(entries)
+}
+
+/**
+ * 寄存器对用户侧的统一接口 Bundle（每个寄存器一个）。
+ *
+ * 按访问类型分组的子接口（组内为按字段名的输入端口，可直接 `:=` 赋值）：
+ *  - sw    ：SW→HW 事件视图（wrEn/wrData/rdEn/rdData/value，Output）
+ *  - ro    ：RO 字段驱动（.value）
+ *  - hwSet ：W1C/RC 字段置位（.bits）
+ *  - hwClr ：W1S/RS 字段清除（.bits）
+ *  - hwTog ：W1T 字段翻转（.bits）
+ *  - hwWr  ：RW 字段硬件直写（.en + .data）
+ *
+ * 无该类型字段的寄存器对应子接口为空 Record（0 元素），类型始终一致。
+ */
+class RegUserIO(alloc: RegAllocation) extends Bundle {
+  private def entries(acc: AccessType*): Seq[(String, Int)] =
     alloc.fieldAllocations.collect {
       case fa if acc.contains(fa.field.access) => fa.field.name -> fa.field.bitWidth
     }
 
-  val roValue  = new FieldInputRecord(fieldEntries(AccessType.RO))
-  val hwSet    = new FieldInputRecord(fieldEntries(AccessType.W1C, AccessType.RC))
-  val hwClr    = new FieldInputRecord(fieldEntries(AccessType.W1S, AccessType.RS))
-  val hwTog    = new FieldInputRecord(fieldEntries(AccessType.W1T))
-  val hwWrData = new FieldInputRecord(fieldEntries(AccessType.RW))
-  val hwWrEn   = Input(Bool())
+  val sw    = new RegSwIO(alloc.reg.expandedBits)
+  val ro    = new RoHwIF(entries(AccessType.RO))
+  val hwSet = new HwSetIF(entries(AccessType.W1C, AccessType.RC))
+  val hwClr = new HwClrIF(entries(AccessType.W1S, AccessType.RS))
+  val hwTog = new HwTogIF(entries(AccessType.W1T))
+  val hwWr  = new HwWrIF(entries(AccessType.RW))
 }
 
-/** 按方向逐信号连接"外层记录元素"与"内部寄存器 core"（正确处理 Input/Output） */
+/** 按方向逐子接口连接"外层统一接口"与"内部寄存器 core"（正确处理 Input/Output） */
 object CoreConnect {
-  def apply(outer: RegCoreIO, inner: RegCoreIO): Unit = {
-    outer.wrEn   := inner.wrEn
-    outer.wrData := inner.wrData
-    outer.rdEn   := inner.rdEn
-    outer.rdData := inner.rdData
-    outer.value  := inner.value
-    connectRecord(outer.roValue,  inner.roValue)
-    connectRecord(outer.hwSet,    inner.hwSet)
-    connectRecord(outer.hwClr,    inner.hwClr)
-    connectRecord(outer.hwTog,    inner.hwTog)
-    connectRecord(outer.hwWrData, inner.hwWrData)
-    inner.hwWrEn := outer.hwWrEn
+  def apply(outer: RegUserIO, inner: RegUserIO): Unit = {
+    outer.sw := inner.sw // 同向 Output，Bundle 级整体连接
+    connectRecord(inner.ro.value,    outer.ro.value)
+    connectRecord(inner.hwSet.bits,  outer.hwSet.bits)
+    connectRecord(inner.hwClr.bits,  outer.hwClr.bits)
+    connectRecord(inner.hwTog.bits,  outer.hwTog.bits)
+    connectRecord(inner.hwWr.data,   outer.hwWr.data)
+    inner.hwWr.en := outer.hwWr.en
   }
   /** 外层输入 → 内层输入（外层是源，内层是汇） */
-  private def connectRecord(outer: Record, inner: Record): Unit = {
+  private def connectRecord(inner: Record, outer: Record): Unit = {
     outer.elements.foreach { case (n, o) =>
       inner.elements(n).asInstanceOf[UInt] := o.asInstanceOf[UInt]
     }
@@ -93,9 +127,10 @@ case class FieldCfg(field: RegFieldDef, bitOffset: Int) {
  *  - 非原子（atomic=false）：逐字直接写入对应位域（中间态可被读观测）。
  *
  * 其他语义：
- *  - RO 字段由 roValue 输入端口驱动，读回正常；
- *  - W1C/RC 支持 hwSet 置位、W1S/RS 支持 hwClr 清除、W1T 支持 hwTog 翻转、RW 支持 hwWrEn/hwWrData 直写；
- *  - wrEn/wrData 为同一拍的写脉冲；rdEn/rdData 为同一拍的读脉冲。
+ *  - RO 字段由 io.core.ro.value 输入端口驱动，读回正常；
+ *  - W1C/RC 支持 io.core.hwSet.bits 置位、W1S/RS 支持 io.core.hwClr.bits 清除、
+ *    W1T 支持 io.core.hwTog.bits 翻转、RW 支持 io.core.hwWr.en/.data 直写；
+ *  - io.core.sw.wrEn/wrData 为同一拍的写脉冲；io.core.sw.rdEn/rdData 为同一拍的读脉冲。
  *
  * 优先级（同拍冲突）：SW 写 > 读副作用(RC/RS) > HW set/clr/tog。
  */
@@ -111,7 +146,7 @@ class FieldReg(alloc: RegAllocation, dataWidth: Int) extends Module {
   val io = IO(new Bundle {
     val dec  = new DecIO(dataWidth)
     val wordSel = Input(UInt(wordSelWidth.W))
-    val core = new RegCoreIO(alloc)
+    val core = new RegUserIO(alloc)
   })
 
   // 存储（RO 字段无存储）
@@ -123,7 +158,7 @@ class FieldReg(alloc: RegAllocation, dataWidth: Int) extends Module {
   private val readVal = Wire(UInt(totalW.W))
   readVal := cfgs.foldLeft(0.U(totalW.W)) { case (acc, cfg) =>
     val v: UInt = cfg.field.access match {
-      case AccessType.RO => io.core.roValue.elements(cfg.name).asInstanceOf[UInt]
+      case AccessType.RO => io.core.ro.value.elements(cfg.name).asInstanceOf[UInt]
       case AccessType.WO => 0.U(cfg.width.W) // 只写字段读回 0
       case _             => storages(cfg.name)
     }
@@ -186,17 +221,17 @@ class FieldReg(alloc: RegAllocation, dataWidth: Int) extends Module {
     storages.get(cfg.name).foreach { st =>
       cfg.field.access match {
         case AccessType.W1C | AccessType.RC =>
-          val hwSetF = io.core.hwSet.elements(cfg.name).asInstanceOf[UInt]
+          val hwSetF = io.core.hwSet.bits.elements(cfg.name).asInstanceOf[UInt]
           when(hwSetF.orR) { st := st | hwSetF }
         case AccessType.W1S | AccessType.RS =>
-          val hwClrF = io.core.hwClr.elements(cfg.name).asInstanceOf[UInt]
+          val hwClrF = io.core.hwClr.bits.elements(cfg.name).asInstanceOf[UInt]
           when(hwClrF.orR) { st := st & ~hwClrF }
         case AccessType.W1T =>
-          val hwTogF = io.core.hwTog.elements(cfg.name).asInstanceOf[UInt]
+          val hwTogF = io.core.hwTog.bits.elements(cfg.name).asInstanceOf[UInt]
           when(hwTogF.orR) { st := st ^ hwTogF }
         case AccessType.RW =>
-          val hwWrF = io.core.hwWrData.elements(cfg.name).asInstanceOf[UInt]
-          when(io.core.hwWrEn) { st := hwWrF }
+          val hwWrF = io.core.hwWr.data.elements(cfg.name).asInstanceOf[UInt]
+          when(io.core.hwWr.en) { st := hwWrF }
         case _ =>
       }
     }
@@ -256,17 +291,17 @@ class FieldReg(alloc: RegAllocation, dataWidth: Int) extends Module {
   }
 
   // ---------------- 用户侧输出 ----------------
-  io.core.wrEn := RegNext(io.dec.wr, false.B)
-  io.core.wrData := (RegEnable(io.dec.wdata, io.dec.wr).pad(totalW))(totalW - 1, 0)
-  io.core.rdEn := RegNext(io.dec.rd, false.B)
-  io.core.rdData := RegEnable(readVal, io.dec.rd)
-  io.core.value := readVal
+  io.core.sw.wrEn   := RegNext(io.dec.wr, false.B)
+  io.core.sw.wrData := (RegEnable(io.dec.wdata, io.dec.wr).pad(totalW))(totalW - 1, 0)
+  io.core.sw.rdEn   := RegNext(io.dec.rd, false.B)
+  io.core.sw.rdData := RegEnable(readVal, io.dec.rd)
+  io.core.sw.value  := readVal
 }
 
-/** 按寄存器名的用户连接面（Record，每元素为 RegCoreIO） */
+/** 按寄存器名的用户连接面（Record，每元素为统一接口 RegUserIO） */
 class RegUserRecord(map: RegFileMap) extends Record {
-  val elements: ListMap[String, RegCoreIO] =
-    ListMap(map.regs.map(a => a.reg.name -> new RegCoreIO(a)): _*)
+  val elements: ListMap[String, RegUserIO] =
+    ListMap(map.regs.map(a => a.reg.name -> new RegUserIO(a)): _*)
 }
 
 /** 存储器响应状态编码（用户侧 → RegFileTop） */
@@ -375,7 +410,7 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
       val sel = (io.addr - base.U(addrWidth.W)) >> log2Ceil(dataWidth / 8)
       m.io.wordSel := sel(log2Ceil(a.wordCount) - 1, 0)
     }
-    CoreConnect(io.user.elements(a.reg.name).asInstanceOf[RegCoreIO], m.io.core)
+    CoreConnect(io.user.elements(a.reg.name).asInstanceOf[RegUserIO], m.io.core)
     regRdata(i) := m.io.dec.rdata
   }
 
