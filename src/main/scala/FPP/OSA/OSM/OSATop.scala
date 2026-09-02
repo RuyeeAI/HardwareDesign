@@ -88,14 +88,17 @@ class OSATop(config: OSAConfig) extends GenModule {
   descQ.io.deq.ready := false.B   // v1: descriptor-driven read scheduling is TODO
 
   // ---- read-side datapath (v1: simple read-base counter) -------------------
-  // Reads only proceed while there is unread data (wrTotal > rdTotal), so the
+  // Reads only proceed while there is unread data (inFlight > 0), so the
   // OSA never reads un-written addresses and the loopback ports can use the
   // egress when the network has nothing to send.
   val rd = Module(new BufRdCtrl(config))
   val rdBase = RegInit(0.U(config.bufAddrWidth.W))
   val wrTotal = RegInit(0.U(32.W))
   val rdTotal = RegInit(0.U(32.W))
-  val rdAvail = wrTotal > rdTotal
+  // 回绕安全判据：两计数器同宽回绕取模差；只要在途段数 < 2^31 恒正确
+  //（旧的 wrTotal > rdTotal 直接比较在计数器回绕后会翻转）
+  val inFlight = wrTotal - rdTotal
+  val rdAvail  = inFlight =/= 0.U
   rd.io.rdBase := rdBase
   rd.io.rdEn := io.cellOut.ready && rdAvail
   rd.io.wrMask := wrPath.io.bankWe.asUInt
@@ -141,15 +144,7 @@ class OSATop(config: OSAConfig) extends GenModule {
 
   io.cellOut <> eg.io.out
 
-  // ---- backpressure ----------------------------------------------------------
-  val bp = Module(new BpGen(config))
-  bp.io.occupancy  := io.occupancy
-  bp.io.thresholds := io.thresholds
-  bp.io.pfcPriMap  := io.pfcPriMap
-  bp.io.bpMask     := io.bpMask
-  io.macBp := bp.io.macBp
-
-  // ---- occupancy (v1: write-accumulated) ------------------------------------
+  // ---- occupancy (v1: write-accumulated; read decrement TODO) ----------------
   val occ = RegInit(VecInit(Seq.fill(config.portCount)(0.U(config.bufAddrWidth.W))))
   // per-port write count chain (position-ordered, no combinational loop)
   val cntChain = Seq.fill(config.segmentsPerCycle + 1)(Wire(Vec(config.portCount, UInt(5.W))))
@@ -165,12 +160,22 @@ class OSATop(config: OSAConfig) extends GenModule {
     occ(p) := occ(p) + cntChain(config.segmentsPerCycle)(p)
     io.occupancy(p) := occ(p)
   }
-  // read/write progress counters (drive rdAvail)
-  when(cntChain(config.segmentsPerCycle).asUInt.orR) {
-    wrTotal := wrTotal + cntChain(config.segmentsPerCycle).asUInt
-  }
-  when(rd.io.rdEn) { rdTotal := rdTotal + config.outSegPerBeat.U }
-  adm.io.occupancy := io.occupancy
+  // 每拍写入段数 = 各端口计数求和。
+  //（注意不能用 Vec.asUInt —— 那是位拼接：port1 计 1 会表现为 32 而非 1）
+  val wrBeat = cntChain(config.segmentsPerCycle).reduce(_ + _)
+
+  // read/write progress counters (drive inFlight/rdAvail, wrap-safe)
+  when(wrBeat =/= 0.U) { wrTotal := wrTotal + wrBeat }
+  when(rd.io.rdEn)     { rdTotal := rdTotal + config.outSegPerBeat.U }
+  adm.io.occupancy := occ
+
+  // ---- backpressure ----------------------------------------------------------
+  val bp = Module(new BpGen(config))
+  bp.io.occupancy  := occ        // 读内部占用信号（读 Output 端口虽合法但语义不清）
+  bp.io.thresholds := io.thresholds
+  bp.io.pfcPriMap  := io.pfcPriMap
+  bp.io.bpMask     := io.bpMask
+  io.macBp := bp.io.macBp
 
   // context release on admission decision (forward or drop)
   val rel = Wire(Vec(config.ctxPool, Bool()))

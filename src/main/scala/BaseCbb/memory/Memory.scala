@@ -57,10 +57,12 @@ case class Memory(
                    bypassOnConflict:Boolean = false,
                    RsMemoryDisLat:Int = 32
                  ) {
-
-
-
-  private def log2Ceil(x: Int): Int = if (x <= 1) 0 else math.ceil(math.log(x.toDouble) / math.log(2)).toInt
+  // ── 配置合法性前置校验（避免 elaborate 到一半才报裸 require）──────────────
+  require(depth > 0, s"Memory '$name': depth must be positive, got $depth")
+  require(instNum > 0, s"Memory '$name': instNum must be positive, got $instNum")
+  require(dataType.getWidth > 0, s"Memory '$name': dataType width must be positive")
+  require(protectWidthTh >= 4,
+    s"Memory '$name': protectWidthTh=$protectWidthTh too small, ECC/Parity segment requires >= 4 bits")
 
   def dataWidth:Int = {
     val eccSegNum = math.ceil(dataType.getWidth.toDouble / protectWidthTh).toInt
@@ -97,26 +99,18 @@ case class Memory(
     lat
   }
 
-  def eccWidth(n:Int):Int={
-    val k = log2Ceil(n)
-    if(math.pow(2,k)>=(n+k+1)){
-      k
-    }else{
-      k+1
-    }
-  }
+  /** SECDED 校验位宽公式单点实现（委托 EccCodec，公式详见 eccWidthOf） */
+  def eccWidth(n:Int):Int = EccCodec.eccWidthOf(n)
 
   def addrWidth:Int = log2Ceil(depth)
 
-  def toMap: Map[String, Any] = {
-    var map: Map[String, Any] = Map()
-    map += ("Name" -> name)  // 修复：原为未定义的大写 Name
-    map += ("AccessType" -> memoryType)
-    map += ("Width" -> dataWidth)
-    map += ("Depth" -> depth)
-    map += ("InstNum" -> instNum )
-    map
-  }
+  def toMap: Map[String, Any] = Map(
+    "Name"       -> name,
+    "AccessType" -> memoryType,
+    "Width"      -> dataWidth,
+    "Depth"      -> depth,
+    "InstNum"    -> instNum
+  )
 }
 
 
@@ -251,37 +245,34 @@ class SpMemoryWrap(
   // ================================================================
   // Input pipeline chain
   // ================================================================
-  // we / re: RegNext × inDepth（组合旁路，仅延迟对齐）
-  private val pipeInWe = (0 until inDepth).foldLeft(lgc.we)((prev, _) => RegNext(prev))
-  private val pipeInRe = (0 until inDepth).foldLeft(lgc.re)((prev, _) => RegNext(prev))
+  withClockAndReset(clk, !rst_n) {
+    // --------------------------------------------------------------
+    // Input pipeline chain
+    // --------------------------------------------------------------
+    // we / re: RegNext × inDepth（组合旁路，仅延迟对齐）
+    val pipeInWe = (0 until inDepth).foldLeft(lgc.we)((prev, _) => RegNext(prev))
+    val pipeInRe = (0 until inDepth).foldLeft(lgc.re)((prev, _) => RegNext(prev))
 
-  // addr / wdata: RegEnable(_, we) × inDepth（仅在 we=1 时采样）
-  private val pipeInAddr  = (0 until inDepth).foldLeft(lgc.addr)((prev, _) =>
-    RegEnable(prev, lgc.we||lgc.re))
-  private val pipeInWdata = (0 until inDepth).foldLeft(lgc.wdata)((prev, _) =>
-    RegEnable(prev, lgc.we))
+    // addr / wdata: RegEnable(_, we) × inDepth（仅在 we=1 时采样）
+    val pipeInAddr  = (0 until inDepth).foldLeft(lgc.addr)((prev, _) =>
+      RegEnable(prev, lgc.we || lgc.re))
+    val pipeInWdata = (0 until inDepth).foldLeft(lgc.wdata)((prev, _) =>
+      RegEnable(prev, lgc.we))
 
-  // ================================================================
-  // Physical memory instance
-  // ================================================================
-  if (mem.isPhysicalMemory) {
-    val mem_inst = Module(new SpMemoryBB(mem)).suggestName(mem.name + "_PHY_MEM")
-    mem_inst.io.clk  := clk
-    mem_inst.io.we    := pipeInWe
-    mem_inst.io.re    := pipeInRe
-    mem_inst.io.addr  := pipeInAddr
-    mem_inst.io.wdata := pipeInWdata
-    withClockAndReset(clk,rst_n) {
-      // Output pipeline
-      if (mem.flopOut) {
-        lgc.rdata := RegNext(mem_inst.io.rdata)
-      } else {
-        lgc.rdata := mem_inst.io.rdata
-      }
-    }
+    // --------------------------------------------------------------
+    // Physical memory instance
+    // --------------------------------------------------------------
+    if (mem.isPhysicalMemory) {
+      val mem_inst = Module(new SpMemoryBB(mem)).suggestName(mem.name + "_PHY_MEM")
+      mem_inst.io.clk  := clk
+      mem_inst.io.we    := pipeInWe
+      mem_inst.io.re    := pipeInRe
+      mem_inst.io.addr  := pipeInAddr
+      mem_inst.io.wdata := pipeInWdata
+      // Output pipeline（outDepth 统一控制，与 TpMemoryWrap 行为一致）
+      lgc.rdata := (0 until outDepth).foldLeft(mem_inst.io.rdata)((prev, _) => RegNext(prev))
 
-  } else {
-    withClockAndReset(clk, rst_n) {
+    } else {
       val mem_inst = Module(new SimMemory(mem.dataWidth,mem.depth))
       mem_inst.io.we    := pipeInWe
       mem_inst.io.re    := pipeInRe
@@ -290,11 +281,7 @@ class SpMemoryWrap(
       mem_inst.io.wdata := pipeInWdata
 
       // Output pipeline
-      if(mem.flopOut){
-        lgc.rdata := RegNext(mem_inst.io.rdata)
-      }else{
-        lgc.rdata := mem_inst.io.rdata
-      }
+      lgc.rdata := (0 until outDepth).foldLeft(mem_inst.io.rdata)((prev, _) => RegNext(prev))
     }
   }
 }
@@ -323,37 +310,41 @@ class TpMemoryWrap(
   val lgc   = IO(new TpMemoryPort(mem.addrWidth, mem.dataWidth))
 
   // ================================================================
-  // Input pipeline chain
+  // 同 SpMemoryWrap：rst_n 低有效显式转高有效；RawModule 全部时序逻辑
+  //（含 flopIn=true 时的输入流水）必须在同一时钟域内。
   // ================================================================
-  // we / re: RegNext × inDepth
-  private val pipeInWe = (0 until inDepth).foldLeft(lgc.we)((prev, _) => RegNext(prev))
-  private val pipeInRe = (0 until inDepth).foldLeft(lgc.re)((prev, _) => RegNext(prev))
+  withClockAndReset(clk, !rst_n) {
+    // --------------------------------------------------------------
+    // Input pipeline chain
+    // --------------------------------------------------------------
+    // we / re: RegNext × inDepth
+    val pipeInWe = (0 until inDepth).foldLeft(lgc.we)((prev, _) => RegNext(prev))
+    val pipeInRe = (0 until inDepth).foldLeft(lgc.re)((prev, _) => RegNext(prev))
 
-  // addr / wdata: RegEnable(_, we) × inDepth
-  private val pipeInWaddr = (0 until inDepth).foldLeft(lgc.waddr)((prev, _) =>
-    RegEnable(prev, lgc.we))
-  private val pipeInRaddr = (0 until inDepth).foldLeft(lgc.raddr)((prev, _) =>
-    RegEnable(prev, lgc.re))
-  private val pipeInWdata = (0 until inDepth).foldLeft(lgc.wdata)((prev, _) =>
-    RegEnable(prev, lgc.we))
+    // addr / wdata: RegEnable(_, we) × inDepth
+    val pipeInWaddr = (0 until inDepth).foldLeft(lgc.waddr)((prev, _) =>
+      RegEnable(prev, lgc.we))
+    val pipeInRaddr = (0 until inDepth).foldLeft(lgc.raddr)((prev, _) =>
+      RegEnable(prev, lgc.re))
+    val pipeInWdata = (0 until inDepth).foldLeft(lgc.wdata)((prev, _) =>
+      RegEnable(prev, lgc.we))
 
-  // ================================================================
-  // Physical memory instance
-  // ================================================================
-  if (mem.isPhysicalMemory) {
-    val mem_inst = Module(new TpMemoryBB(mem)).suggestName(mem.name + "_PHY_MEM")
-    mem_inst.io.clk   := clk
-    mem_inst.io.we    := pipeInWe
-    mem_inst.io.re    := pipeInRe
-    mem_inst.io.waddr := pipeInWaddr
-    mem_inst.io.raddr := pipeInRaddr
-    mem_inst.io.wdata := pipeInWdata
+    // --------------------------------------------------------------
+    // Physical memory instance
+    // --------------------------------------------------------------
+    if (mem.isPhysicalMemory) {
+      val mem_inst = Module(new TpMemoryBB(mem)).suggestName(mem.name + "_PHY_MEM")
+      mem_inst.io.clk   := clk
+      mem_inst.io.we    := pipeInWe
+      mem_inst.io.re    := pipeInRe
+      mem_inst.io.waddr := pipeInWaddr
+      mem_inst.io.raddr := pipeInRaddr
+      mem_inst.io.wdata := pipeInWdata
 
-    // Output pipeline
-    lgc.rdata := (0 until outDepth).foldLeft(mem_inst.io.rdata)((prev, _) => RegNext(prev))
+      // Output pipeline
+      lgc.rdata := (0 until outDepth).foldLeft(mem_inst.io.rdata)((prev, _) => RegNext(prev))
 
-  } else {
-    withClockAndReset(clk, rst_n) {
+    } else {
       val mem_inst = Module(new SimMemory(mem.dataWidth,mem.depth))
       mem_inst.io.we    := pipeInWe
       mem_inst.io.re    := pipeInRe
@@ -374,7 +365,24 @@ object EccCodec {
 
   def eccWidthOf(segBits: Int): Int = {
     val k = log2Ceil(segBits)
-    if (math.pow(2, k) >= (segBits + k + 1)) k else k + 1
+    if ((1 << k) >= (segBits + k + 1)) k else k + 1
+  }
+
+  /**
+   * 标准汉明位置表：数据位依次占据非 2 的幂位置（1-based），校验位 i 位于 2^i。
+   * 这样 syndrome 直接给出出错位置，且数据位/校验位位置不会碰撞
+   * （旧实现 dPos = d + k + 1 会与 2^i 重叠，且纠错翻转位偏了 k）。
+   */
+  private[memory] def hammingDataPositions(segBits: Int, k: Int): Seq[Int] = {
+    val out = scala.collection.mutable.ArrayBuffer[Int]()
+    var p = 1
+    while (out.size < segBits) {
+      if ((p & (p - 1)) != 0) out += p
+      p += 1
+    }
+    require(out.last < (1 << k),
+      s"Hamming positions (max=${out.last}) exceed k=$k check bits for segBits=$segBits")
+    out.toSeq
   }
 
   def encodeParity(data: UInt, eccSegNum: Int, eccSegWidth: Int, lastEccSegWidth: Int): UInt = {
@@ -387,13 +395,20 @@ object EccCodec {
     Cat(VecInit(parityBits.reverse).asUInt, data)
   }
 
-  def decodeParity(rdata: UInt,  parSegNum: Int, parSegWidth: Int, lastParSegWidth: Int): (UInt, Bool, Bool) = {
+  /**
+   * 奇偶校验解码。布局与 encodeParity 严格镜像：
+   *   encodeParity = Cat(parityBits.reverse, data) —— 数据连续在低位，校验位连续在高位，
+   *   其中段 i 的校验位位于 bit (dataBits + (parSegNum-1-i))。
+   * （旧实现按"每段后跟 1 bit 校验"的交错布局取位，多段时与编码端不一致。）
+   */
+  def decodeParity(rdata: UInt, parSegNum: Int, parSegWidth: Int, lastParSegWidth: Int): (UInt, Bool, Bool) = {
+    val dataBits = rdata.getWidth - parSegNum
     var anyErr = false.B
     val segs = (0 until parSegNum).map { i =>
       val segBits = if (i < parSegNum - 1) parSegWidth else lastParSegWidth
-      val offset  = i * (parSegWidth+1)
+      val offset  = i * parSegWidth
       val seg     = rdata(offset + segBits - 1, offset)
-      val par     = rdata(offset + segBits)
+      val par     = rdata(dataBits + (parSegNum - 1 - i))
       val calc    = seg.asUInt.xorR
       anyErr      = anyErr || (par =/= calc)
       seg
@@ -414,17 +429,18 @@ object EccCodec {
 
   def encodeEccSeg(data: UInt, k: Int): UInt = {
     require(k >= 3, s"ECC segment requires at least 4 total ecc bits, got $k")
+    val W         = data.getWidth
+    val positions = hammingDataPositions(W, k)
     val checkBits = Wire(Vec(k, Bool()))
     for (i <- 0 until k) {
       val pos = 1 << i
       var parity = false.B
-      for (d <- 0 until data.getWidth) {
-        val dPos = d + k + 1
-        if ((dPos & pos) != 0) { parity = parity ^ data(d) }
+      for (d <- 0 until W) {
+        if ((positions(d) & pos) != 0) { parity = parity ^ data(d) }
       }
       checkBits(i) := parity
     }
-    val dataXor       = (0 until data.getWidth).foldLeft(false.B)((p, i) => p ^ data(i))
+    val dataXor       = (0 until W).foldLeft(false.B)((p, i) => p ^ data(i))
     val checkXor      = (0 until k).foldLeft(dataXor)((p, i) => p ^ checkBits(i))
     val overallParity = checkXor
     Cat(overallParity, checkBits.asUInt, data)
@@ -433,17 +449,21 @@ object EccCodec {
   def decodeEccMultiSeg(rdata: UInt, dataBits: Int, eccSegNum: Int, eccSegWidth: Int, lastEccSegWidth: Int): (UInt, Bool, Bool) = {
     var anyErr    = false.B
     var anyUerr   = false.B
+    // 段物理宽度与 encodeEcc 的 Cat(segEncoded.reverse) 布局严格镜像：
+    // Cat 的首参数在高位，因此段 0 位于最低位、段 n-1 位于最高位，
+    // 段 i 起始偏移 = 宽度比它低的各段（j<i）之和（各段宽度可能不等，不能用「段宽 × 序号」）。
+    val segWidths = (0 until eccSegNum).map { i =>
+      val sb = if (i < eccSegNum - 1) eccSegWidth else lastEccSegWidth
+      sb + eccWidthOf(sb) + 1
+    }
+    val segStarts = segWidths.scanLeft(0)(_ + _)  // segStarts(i) = 段 i 之前的累计宽度
     val segDecoded = (0 until eccSegNum).map { i =>
       val segBits     = if (i < eccSegNum - 1) eccSegWidth else lastEccSegWidth
       val k           = eccWidthOf(segBits)
       val eccBitsThis = k + 1
-      // Segments are reversed during encode: segOffset(i) = position of seg i's data in final layout
-      // After Cat(segEncoded.reverse), seg N-1 is at low bits, seg 0 is at high bits
-      val totalSegBits = segBits + eccBitsThis
-      val segOffset    = (eccSegNum - 1 - i) * totalSegBits
-      val rdataOffset  = segOffset + segBits  // ECC bits follow data within each segment's encoding
+      val segOffset   = segStarts(i)
       val segRdata = rdata(segOffset + segBits - 1, segOffset)
-      val segEcc   = rdata(rdataOffset + eccBitsThis - 1, rdataOffset)
+      val segEcc   = rdata(segOffset + segBits + eccBitsThis - 1, segOffset + segBits)
       val (decSeg, err, uerr) = decodeEccSeg(segRdata, segEcc, k)
       anyErr  = anyErr  || err
       anyUerr = anyUerr || uerr
@@ -453,30 +473,48 @@ object EccCodec {
   }
 
   def decodeEccSeg(rdata: UInt, eccFull: UInt, k: Int): (UInt, Bool, Bool) = {
+    val W              = rdata.getWidth
     val receivedData   = rdata
     val receivedCheck  = eccFull(k - 1, 0)
     val receivedParity = eccFull(k)
+    val positions      = hammingDataPositions(W, k)
     val recomputedCheck = Wire(Vec(k, Bool()))
     for (i <- 0 until k) {
       val pos = 1 << i
       var parity = false.B
-      for (d <- 0 until rdata.getWidth) {
-        val dPos = d + k + 1
-        if ((dPos & pos) != 0) { parity = parity ^ receivedData(d) }
+      for (d <- 0 until W) {
+        if ((positions(d) & pos) != 0) { parity = parity ^ receivedData(d) }
       }
       recomputedCheck(i) := parity
     }
     val syndrome = Wire(Vec(k, Bool()))
     for (i <- 0 until k) { syndrome(i) := receivedCheck(i) =/= recomputedCheck(i) }
-    val syndromeNonZero = syndrome.asUInt =/= 0.U
-    val dataXor   = (0 until rdata.getWidth).foldLeft(false.B)((p, i) => p ^ receivedData(i))
-    val checkXor  = (0 until k).foldLeft(dataXor)((p, i) => p ^ recomputedCheck(i))
-    val parityMismatch = receivedParity =/= checkXor
-    val syndromeIdx   = syndrome.asUInt - 1.U
-    val correctedData = Wire(UInt(rdata.getWidth.W))
+    val syndromeVal     = syndrome.asUInt
+    val syndromeNonZero = syndromeVal =/= 0.U
+    // syndrome 为 2 的幂 → 出错的是校验位自身（标准汉明下数据位永不落在 2 的幂上），
+    // 数据无需纠正；旧实现此处会把校验位错误误判成数据位错并翻错位。
+    val isCheckPos = syndromeNonZero && ((syndromeVal & (syndromeVal - 1.U)) === 0.U)
+    // 整体校验：对"接收到的码字"（数据位 + 接收到的校验位）求奇偶，与存储的总校验位比较。
+    // 必须用接收到的校验位而非重算值 —— 若用重算值，落在奇重数汉明位置（如 7=0b111）上的
+    // 单比特错会因数据位与校验位翻转相互抵消而被误判为双比特错、且不纠错。
+    val parityMismatch = receivedParity =/= (receivedData.xorR ^ receivedCheck.xorR)
+    // 出错数据位索引：syndromeVal 命中哪个数据位位置（位置互异，至多一个命中）
+    val corrIdxWidth = math.max(1, log2Ceil(W))
+    val corrIdx = Wire(UInt(corrIdxWidth.W))
+    corrIdx := 0.U
+    for (d <- 0 until W) {
+      when(syndromeVal === positions(d).U) { corrIdx := d.U }
+    }
+    val correctedData = Wire(UInt(W.W))
     correctedData := receivedData
-    when(syndromeNonZero && parityMismatch) { correctedData := receivedData ^ (1.U << syndromeIdx).asUInt }
-    val err  = syndromeNonZero
+    when(syndromeNonZero && parityMismatch && !isCheckPos) {
+      correctedData := receivedData ^ (1.U << corrIdx).asUInt
+    }
+    // 分类（标准 SECDED）：
+    //   syndrome≠0 且整体校验失配 → 单比特错（数据位可纠，校验位错则数据本来就对）；
+    //   syndrome≠0 且整体校验匹配 → 双比特错（不可纠正）；
+    //   syndrome=0 且整体校验失配 → 仅总校验位自身出错（数据无恙）。
+    val err  = syndromeNonZero || parityMismatch
     val uerr = syndromeNonZero && !parityMismatch
     (correctedData, err, uerr)
   }
