@@ -48,6 +48,8 @@ class OSATop(config: OSAConfig) extends GenModule {
     val descCount    = Output(Vec(config.portCount, UInt(5.W)))
     val dropCnt      = Output(UInt(16.W))
     val wrConflictCnt = Output(UInt(32.W))
+    // 被丢弃但空间无法安全回收的报文数（地址区间后面还有别的报文，回退会踩到别人）
+    val rollbackLeakCnt = Output(UInt(32.W))
   })
 
   // ---- write-side datapath ------------------------------------------------
@@ -79,6 +81,8 @@ class OSATop(config: OSAConfig) extends GenModule {
   wrPath.io.segs := segDemux.io.segs
   // 描述符的 bufBase 来自写路径锁存的每 context 首地址（必须在 wrPath 之后连接）
   adm.io.ctxStart := wrPath.io.ctxStart
+  // 丢弃回退：写指针回退 + 占用释放（只回退地址区间位于尾部的那些）
+  wrPath.io.rollback := adm.io.rollback
 
   val bufRam = Module(new BufRam(config))
   bufRam.io.wrReq := VecInit(wrPath.io.bankWe zip wrPath.io.bankAddr zip wrPath.io.bankData zip
@@ -191,16 +195,27 @@ class OSATop(config: OSAConfig) extends GenModule {
       cntChain(pos + 1)(seg.portId) := cntChain(pos)(seg.portId) + 1.U
     }
   }
+  // 丢弃回退：只释放实际完成回退的那些（BufWrPath 判定为尾部安全）
+  val rollDec = Wire(Vec(config.portCount, UInt(config.bufAddrWidth.W)))
+  for (p <- 0 until config.portCount) {
+    rollDec(p) := wrPath.io.rollbackApplied.map(r =>
+      Mux(r.valid && r.bits.portId === p.U, r.bits.segCount, 0.U(config.bufAddrWidth.W))
+    ).reduce(_ + _)
+  }
+
   for (p <- 0 until config.portCount) {
     val inc  = cntChain(config.segmentsPerCycle)(p)
     // 读出口按端口归属递减（v1 只增不减，一旦越过门限反压就再也不会释放）
     val dec  = Mux(rdPop && rdDescD.portId === p.U, rdSegsD, 0.U(config.bufAddrWidth.W))
     val next = occ(p) + inc
     // 饱和到 0：写冲突丢段等异常下宁可少计，也不要回绕成天文数字
-    occ(p) := Mux(next >= dec, next - dec, 0.U(config.bufAddrWidth.W))
+    val afterRd  = Mux(next >= dec, next - dec, 0.U(config.bufAddrWidth.W))
+    // 丢弃回退释放（同样饱和，避免回退量超过已计数）
+    occ(p) := Mux(afterRd >= rollDec(p), afterRd - rollDec(p), 0.U(config.bufAddrWidth.W))
     io.occupancy(p) := occ(p)
   }
   adm.io.occupancy := occ
+  io.rollbackLeakCnt := wrPath.io.rollbackLeakCnt
 
   // ---- backpressure ----------------------------------------------------------
   val bp = Module(new BpGen(config))

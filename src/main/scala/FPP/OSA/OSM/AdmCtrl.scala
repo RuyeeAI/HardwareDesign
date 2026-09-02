@@ -56,6 +56,7 @@ class AdmCtrl(config: OSAConfig) extends GenModule {
     // rollback on drop
     io.rollback(i).valid := drop
     io.rollback(i).bits.portId := d.bits.portId
+    io.rollback(i).bits.slotId := d.bits.slotId
     io.rollback(i).bits.segCount := d.bits.segCount
   }
 

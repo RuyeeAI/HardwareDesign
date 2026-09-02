@@ -159,8 +159,51 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
       for (_ <- 0 until 12) dut.clock.step(1)
 
       assert(dut.io.dropCnt.peek().litValue > 0, "min-size packet should be dropped")
-      // written segments still increment occupancy (write happens before decision)
-      assert(dut.io.occupancy(0).peek().litValue >= 1)
+      // 丢弃的报文必须把缓冲空间还回来：v1 只计数不回退写指针，占用会一直累积
+      val occ = dut.io.occupancy(0).peek().litValue
+      assert(occ == 0, s"dropped packet's buffer space should be reclaimed, occupancy = $occ")
+      assert(dut.io.rollbackLeakCnt.peek().litValue == 0,
+        "a lone dropped packet sits at the write-pointer tail, so the rollback must apply")
+    }
+  }
+
+  it should "not alias buffer addresses across ports" in {
+    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
+      pokeIdle(dut)
+
+      // 同一拍内交织两个端口的报文，各 10 段：port0 = 0x00.., port1 = 0x10..
+      // v1 的写指针是每端口各一个且都从 0 起，两个端口会写进同一批地址互相覆盖
+      for (s <- 0 until 20) {
+        val p = if (s < 10) 0 else 1
+        val i = if (s < 10) s else s - 10
+        dut.io.mac.valid(s).poke(true.B)
+        dut.io.mac.sop(s).poke(i == 0)
+        dut.io.mac.eop(s).poke(i == 9)
+        dut.io.mac.err(s).poke(false.B)
+        dut.io.mac.data(s).poke((0x10 * p + i).U)
+        dut.io.mac.portId(s).poke(p.U)
+      }
+      dut.clock.step(1)
+      pokeIdle(dut)
+      for (_ <- 0 until 8) dut.clock.step(1)
+
+      dut.io.cellOut.ready.poke(true.B)
+      val seen = scala.collection.mutable.Set[Int]()
+      for (_ <- 0 until 32) {
+        dut.clock.step(1)
+        if (dut.io.cellOut.valid.peek().litToBoolean) {
+          val port = dut.io.cellOut.bits.portId.peek().litValue.toInt
+          if (!seen.contains(port)) {
+            seen += port
+            for (k <- 0 until 10) {
+              dut.io.cellOut.bits.units(0).data(k).expect((0x10 * port + k).U)
+            }
+          }
+        }
+      }
+      assert(seen.contains(0), "port 0 packet should be read back")
+      assert(seen.contains(1), "port 1 packet should be read back intact (no aliasing)")
     }
   }
 

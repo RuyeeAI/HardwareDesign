@@ -2229,7 +2229,11 @@ automatically, so any region size is bank-conflict-free on the write side.
 |------|------|
 | SegDemux / PktCtxAlloc / PprsBank | 完成(位置序分配、SOP 溢出丢弃) |
 | PktAssembler / AdmCtrl | 完成(EOP+优先级就绪后提交,门限丢弃/回退请求) |
-| BufWrPath → BufRam | 完成(44 bank 映射,写冲突计数) |
+| BufWrPath → BufRam | 完成(单一**全局**写指针;44 bank 映射;丢弃回退 + 泄漏计数) |
+
+> **注意(2026-09-03 修复)**:`BufWrPath` 原先用「每端口一个写指针、全部从 0 起」,
+> 而缓冲是全端口共享的同一地址空间,8 个端口会写进同一批地址互相覆盖。
+> 现改为单一全局写指针(共享缓冲池),per-port 门限/占用仍按端口分别统计。
 | DescQueue | 完成(寄存器 shallow FIFO,depth 16,旋转优先级轮询) |
 | 读调度(OSATop 内) | **描述符驱动**:按 `bufBase`/`segCount` 逐包读,24 段/拍 |
 | BufRdCtrl | 完成(`segLimit`/`lastBeat` 截断与 EOP 生成) |
@@ -2239,7 +2243,8 @@ automatically, so any region size is bank-conflict-free on the write side.
 
 ### D.2 已知差距(TODO)
 
-1. **丢弃回退未落到写指针上**:`AdmCtrl.rollback` 只被计数(`dropCnt`),`BufWrPath.wrPtr` 没有回退。被丢弃报文占用的缓冲不会被回收,occupancy 会持续累积。需补:按端口聚合 `segCount` 后 `wrPtr(p) -= n`,并同步递减 `occ(p)`。
+1. ~~**丢弃回退未落到写指针上**~~ —— **已修复(2026-09-03)**:`BufWrPath` 接受 `rollback`,回退写指针并同步释放占用。报文段会被其它报文穿插,因此只有被丢报文的区间正好位于写指针尾部(其后没有别的报文)时回退才安全;否则记为泄漏(`rollbackLeakCnt`),宁可少回收也不把还在用的地址分配出去。要无条件回收,得换成空闲链表式分配器。
+7. **缓冲为全端口共享池,未实现 per-port region**:设计文档 §B.5 的 `regionBase`/`regionSize` 分区是"参考配置而非硬分区",当前 RTL 用单一全局写指针,靠 per-port occupancy + 门限做隔离,不预留固定分区。
 2. **写冲突丢段未计入**:`BufWrPath` 检测到 bank 冲突时丢弃低优先级段,但 `cntChain` 仍照常递增,occupancy 与实际入缓冲的段数不一致;读侧会读到旧数据。
 3. **读侧无 bank 冲突检查**:`BufRdCtrl` 依赖"连续地址落在互不相同的 bank"(N < B 时成立),未实现设计文档 §3.10 的 busy-mask / 延迟重发。
 4. **出口未实现 TDM/WRR**:`EgressScheduler` 是严格优先级 + 令牌桶,与设计文档 §3.14 的 TDM 帧 + WRR 不同(见 v2.2 修订),属有意简化。

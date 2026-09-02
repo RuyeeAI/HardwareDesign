@@ -133,6 +133,7 @@ class PktAssemblyDone extends GenBundle {
 /** Buffer rollback info on drop (docs §3.9). */
 class RollbackInfo extends GenBundle {
   val portId   = UInt(3.W)
+  val slotId   = UInt(2.W)   // 定位 context（= portId * ctxPerPort + slotId），回退时需要
   val segCount = UInt(16.W)
 }
 
