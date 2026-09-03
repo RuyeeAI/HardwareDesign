@@ -4,125 +4,56 @@ import BaseCbb.data.{GenBundle, GenModule}
 import chisel3._
 import chisel3.util._
 
-// ============= Constants =============
-object HeaderType {
-  val NONE    = 0.U(8.W)
-  val ETH     = 1.U(8.W)
-  val VLAN    = 2.U(8.W)
-  val MPLS    = 3.U(8.W)
-  val IPV4    = 4.U(8.W)
-  val IPV6    = 5.U(8.W)
-  val TCP     = 6.U(8.W)
-  val UDP     = 7.U(8.W)
-  val ICMP    = 8.U(8.W)
-  val ARP     = 9.U(8.W)
-  val GRE     = 10.U(8.W)
-  val VXLAN   = 11.U(8.W)
-  val GENEVE  = 12.U(8.W)
-  val GTPU    = 13.U(8.W)
-  val NSH     = 14.U(8.W)
-  val PAYLOAD = 15.U(8.W)
-  val UNKNOWN = 16.U(8.W)
-}
-
-// ============= Error Codes =============
-object HeaderErrorCode extends ChiselEnum {
-  val None                = 0.U(4.W)
-  val InvalidEtherType    = 1.U(4.W)
-  val Ipv4ChecksumError   = 2.U(4.W)
-  val InvalidProtocol     = 3.U(4.W)
-  val TruncatedHeader     = 4.U(4.W)
-  val InvalidHeaderLength = 5.U(4.W)
-  val VlanCountOverflow   = 6.U(4.W)
-  val MplsCountOverflow   = 7.U(4.W)
-  val TunnelNotSupported   = 8.U(4.W)
-  val PayloadTooShort     = 9.U(4.W)
-  val Ipv4TtlZero         = 10.U(4.W)
-  val Ipv4VersionError    = 11.U(4.W)
-  val Ipv6HopLimitZero    = 12.U(4.W)
-  val TcpOffsetError      = 13.U(4.W)
-  val UdpLengthError      = 14.U(4.W)
-  val GreVersionError     = 15.U(4.W)
-}
-
-// ============= Packet Header Descriptor =============
-class PacketHeaderDesc extends GenBundle {
-  val headerType = UInt(8.W)    // Protocol type (HeaderType.xxx)
-  val offset = UInt(16.W)        // Byte offset from packet start
-  val length = UInt(8.W)        // Header length in bytes
-  val valid = Bool()            // Header parsed successfully
-  val errorCode = UInt(4.W)      // Error code if valid=false
-}
-
-// ============= Parse Metadata =============
-class ParseMeta extends GenBundle {
-  val totalLen = UInt(16.W)       // Total packet length
-  val parsedLen = UInt(16.W)       // Bytes parsed so far
-  val vlanCount = UInt(3.W)       // Number of VLAN tags parsed
-  val mplsCount = UInt(4.W)       // Number of MPLS labels
-  val checksumValid = Bool()       // Checksum validation result
-  val parseError = Bool()          // Any parse error
-  val errorInfo = UInt(4.W)       // Error code for debugging
-}
-
-// ============= Parse Result =============
-class ParseResult extends GenBundle {
-  val fields = UInt(512.W)         // Extracted fields
-  val nextType = UInt(8.W)         // Next protocol type
-  val headerLen = UInt(8.W)        // Current header length in bytes
-  val valid = Bool()               // Parsing valid
-  val meta = new ParseMeta         // Metadata pass-through
-
-  // Packet Header Offset array (max 24 headers)
-  val pho = Vec(24, UInt(16.W))
-  // Packet Header Information array
-  val phi = Vec(24, new PacketHeaderDesc)
-  // Number of headers parsed
-  val headerCount = UInt(5.W)
-}
-
-// ============= Parser States =============
-object ParserState extends ChiselEnum {
-  val Idle = 0.U(8.W)
-  val Eth = 1.U(8.W)
-  val Vlan = 2.U(8.W)
-  val QinQ = 3.U(8.W)
-  val Mpls = 4.U(8.W)
-  val Ipv4 = 5.U(8.W)
-  val Ipv6 = 6.U(8.W)
-  val Arp = 7.U(8.W)
-  val Tcp = 8.U(8.W)
-  val Udp = 9.U(8.W)
-  val Icmp = 10.U(8.W)
-  val TunnelVxlan = 11.U(8.W)
-  val TunnelGeneve = 12.U(8.W)
-  val TunnelGtpu = 13.U(8.W)
-  val TunnelGre = 14.U(8.W)
-  val TunnelNsh = 15.U(8.W)
-  val Payload = 16.U(8.W)
-  val Done = 17.U(8.W)
-  val Error = 18.U(8.W)
-}
+/**
+ * Per-protocol parse functions and the parser FSM.
+ *
+ * Types (Bundles / constants / state encodings) live in [[ParserTypes]].
+ *
+ * ==字节序约定==
+ * 报文第 k 个字节位于 `bits(8k+7, 8k)`，即 **首字节在低位**。
+ * 每个 parse 函数都假设本层头部的第 0 字节位于入参 `bytes` 的 bits(7,0)，
+ * 因此"跳过本层头部 N 字节"是 **逻辑右移** 8*N 位（见 `shiftBytes`）。
+ *
+ * ==流水线==
+ * 每个解析级可选择插入一级寄存器（`ParserPipelineConfig`）。由于下游是
+ * `Valid`（无反压），插入的级是 1 拍延迟线；FSM 用 `pipeIssued` 做
+ * "已发射/未回收"握手，避免等待期间重复解析、重复记录 PHO/PHI。
+ */
 
 // ============= Parse Functions =============
 // Each parse function returns: (fields, nextType, headerLen, newMeta, errorCode, headerType)
 
-/** Extract Ethernet header fields and determine next protocol type */
+/**
+ * Per-protocol parse functions.
+ *
+ * 所有函数都假设本层头部的第 0 字节位于入参 `bytes` 的最高位段，即：
+ * 字节 k 位于 bits(511-8k, 504-8k)。于是
+ *   - 字节 k          -> bytes(511 - 8*k, 504 - 8*k)
+ *   - 从字节 k 起 w 字节的大端字段 -> bytes(511 - 8*k, 512 - 8*(k + w))
+ * 大端字段（EtherType / total length / UDP 端口 ...）因此可以直接按数值读出，
+ * 无需逐字段做字节反转。
+ *
+ * 每个函数返回 (fields, nextType, headerLen, newMeta, errorCode, headerType)。
+ */
 object parseEthernet {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    val etherType = bytes(15, 0)
-    val nextType = MuxLookup(etherType, ProtocolType.UNKNOWN)(
+    // Ethernet II: DA(6) SA(6) EtherType(2)
+    val etherType = bytes(415, 400)
+    val nextType = MuxLookup(etherType, HeaderType.UNKNOWN)(
       Seq(
-        EtherType.IPv4 -> ProtocolType.TCP,
-        EtherType.IPv6 -> ProtocolType.TCP,
-        EtherType.ARP  -> ProtocolType.UNKNOWN,
-        EtherType.VLAN -> EtherType.VLAN,
-        EtherType.VLAN911 -> EtherType.VLAN911,
-        EtherType.MPLS -> ProtocolType.MPLS,
-        EtherType.MPLS_UNI -> ProtocolType.MPLS,
-        EtherType.LLDP -> ProtocolType.UNKNOWN
+        EtherType.IPv4      -> HeaderType.IPV4,
+        EtherType.IPv6      -> HeaderType.IPV6,
+        EtherType.ARP       -> HeaderType.ARP,
+        EtherType.VLAN      -> HeaderType.VLAN,
+        EtherType.VLAN911   -> HeaderType.VLAN,
+        EtherType.MPLS      -> HeaderType.MPLS,
+        EtherType.MPLS_UNI  -> HeaderType.MPLS,
+        EtherType.LLDP      -> HeaderType.UNKNOWN
       )
     )
+    // VLAN 的 TPID 就占据 EtherType 字段。若其后还要解析 tag，必须把它留给
+    // Vlan 状态，否则 Vlan 只会看到 TCI，永远判定 TPID 非法。
+    val isTpid = etherType === EtherType.VLAN || etherType === EtherType.VLAN911
     val validEtherType = etherType === EtherType.IPv4 ||
                          etherType === EtherType.IPv6 ||
                          etherType === EtherType.ARP ||
@@ -143,25 +74,28 @@ object parseEthernet {
       newMeta.parseError := true.B
       newMeta.errorInfo := HeaderErrorCode.InvalidEtherType
     }
-    (0.U(512.W), nextType, 14.U, newMeta, errorCode, HeaderType.ETH)
+    val nextTypeAdj = Mux(isTpid, HeaderType.VLAN, nextType)
+    val hdrLen = Mux(isTpid, 12.U, 14.U)
+    (0.U(512.W), nextTypeAdj, hdrLen, newMeta, errorCode, HeaderType.ETH)
   }
 }
 
-/** Extract VLAN tag fields */
+/** Extract VLAN tag fields (TPID + TCI = 4 bytes; the inner EtherType follows at byte 4) */
 object parseVlan {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    // After shiftBytes, header starts at bit 0, so TPID is at bits 15:0, inner type at 31:16
-    val tpid = bytes(15, 0)
-    val innerType = bytes(31, 16)
-    val nextType = MuxLookup(innerType, ProtocolType.UNKNOWN)(
+    val tpid = bytes(511, 496)
+    val tci = bytes(495, 480)
+    // tag 之后的 2 字节才是内层 EtherType
+    val innerType = bytes(479, 464)
+    val nextType = MuxLookup(innerType, HeaderType.UNKNOWN)(
       Seq(
-        EtherType.IPv4 -> ProtocolType.TCP,
-        EtherType.IPv6 -> ProtocolType.TCP,
-        EtherType.ARP  -> ProtocolType.UNKNOWN,
-        EtherType.VLAN -> EtherType.VLAN,
-        EtherType.VLAN911 -> EtherType.VLAN911,
-        EtherType.MPLS -> ProtocolType.MPLS,
-        EtherType.MPLS_UNI -> EtherType.MPLS
+        EtherType.IPv4     -> HeaderType.IPV4,
+        EtherType.IPv6     -> HeaderType.IPV6,
+        EtherType.ARP      -> HeaderType.ARP,
+        EtherType.VLAN     -> HeaderType.VLAN,
+        EtherType.VLAN911  -> HeaderType.VLAN,
+        EtherType.MPLS     -> HeaderType.MPLS,
+        EtherType.MPLS_UNI -> HeaderType.MPLS
       )
     )
 
@@ -183,17 +117,24 @@ object parseVlan {
       newMeta.errorInfo := HeaderErrorCode.VlanCountOverflow
     }
 
-    // Keep only the bytes after VLAN header for next stage
-    (bytes(31, 0), nextType, 4.U, newMeta, errorCode, HeaderType.VLAN)
+    // tag 链未结束时只吃掉 TPID+TCI(4 字节)，让下一个 Vlan 状态仍能看到 TPID；
+    // 链结束时连内层 EtherType 一起吃掉(6 字节)，下一层头部才是 IP/ARP。
+    val hdrLen = Mux(nextType === HeaderType.VLAN, 4.U, 6.U)
+    newMeta.errorInfo := errorCode
+
+    (bytes(511, 480), nextType, hdrLen, newMeta, errorCode, HeaderType.VLAN)
   }
 }
 
-/** Extract MPLS label stack entry */
+/** Extract MPLS label stack entry (4 bytes: Label(20) TC(3) S(1) TTL(8)) */
 object parseMpls {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    val bos = bytes(8, 8).asBool
-    val label = bytes(31, 12)
-    val nextType = Mux(bos, ProtocolType.TCP, ProtocolType.MPLS)
+    val label = bytes(511, 492)
+    val tc    = bytes(491, 489)
+    val bos   = bytes(488, 488).asBool
+    val ttl   = bytes(487, 480)
+    // S=1 表示栈底，其后通常是 IP；具体版本由 FSM 探测版本号决定
+    val nextType = Mux(bos, HeaderType.IPV4, HeaderType.MPLS)
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
@@ -207,32 +148,34 @@ object parseMpls {
       newMeta.errorInfo := HeaderErrorCode.MplsCountOverflow
     }
 
-    (bytes(31, 0), nextType, 4.U, newMeta, errorCode, HeaderType.MPLS)
+    newMeta.errorInfo := errorCode
+
+    (bytes(511, 480), nextType, 4.U, newMeta, errorCode, HeaderType.MPLS)
   }
 }
 
 /** Extract IPv4 header fields and validate checksum */
 object parseIpv4 {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    val version = bytes(3, 0)
-    val headerLen = (bytes(7, 4) * 4.U)(5, 0)
-    val totalLen = bytes(31, 16)
-    val ttl = bytes(71, 64)
-    val protocol = bytes(79, 72)
+    val version = bytes(511, 508)
+    val headerLen = (bytes(507, 504) * 4.U)(5, 0)
+    val totalLen = bytes(495, 480)
+    val ttl = bytes(447, 440)
+    val protocol = bytes(439, 432)
 
-    // Calculate IPv4 checksum (sum of all 16-bit words, one's complement)
+    // IPv4 首部校验和：所有 16 位字做反码和，正确的首部（含校验和字段）累加为 0xFFFF
     var sum = 0.U(16.W)
     for (i <- 0 until 10) {
-      val word = bytes(16 * (i + 1) - 1, 16 * i)
+      val word = bytes(511 - 16 * i, 496 - 16 * i)
       val sumWithCarry = sum +& word
       sum = sumWithCarry(15, 0) + sumWithCarry(16)
     }
-    val checksum = ~sum(15, 0)
-    val checksumValid = checksum === 0.U
+    val checksumValid = sum === 0xFFFF.U(16.W)
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
     newMeta.checksumValid := checksumValid
+    newMeta.totalLen := totalLen
 
     val errorCode = Mux(version =/= 4.U, HeaderErrorCode.Ipv4VersionError,
                      Mux(headerLen < 5.U, HeaderErrorCode.InvalidHeaderLength,
@@ -257,28 +200,32 @@ object parseIpv4 {
       newMeta.errorInfo := HeaderErrorCode.Ipv4TtlZero
     }
 
-    val nextType = MuxLookup(protocol, ProtocolType.UNKNOWN)(
+    val nextType = MuxLookup(protocol, HeaderType.UNKNOWN)(
       Seq(
-        ProtocolType.TCP  -> ProtocolType.TCP,
-        ProtocolType.UDP  -> ProtocolType.UDP,
-        ProtocolType.ICMP -> ProtocolType.ICMP,
-        ProtocolType.GRE  -> ProtocolType.GRE,
-        ProtocolType.MPLS -> ProtocolType.MPLS
+        ProtocolType.TCP  -> HeaderType.TCP,
+        ProtocolType.UDP  -> HeaderType.UDP,
+        ProtocolType.ICMP -> HeaderType.ICMP,
+        ProtocolType.GRE  -> HeaderType.GRE,
+        ProtocolType.MPLS -> HeaderType.MPLS
       )
     )
-    (bytes(159, 0), nextType, headerLen, newMeta, errorCode, HeaderType.IPV4)
+    newMeta.errorInfo := errorCode
+
+    (bytes(511, 352), nextType, headerLen, newMeta, errorCode, HeaderType.IPV4)
   }
 }
 
 /** Extract IPv6 header fields */
 object parseIpv6 {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    val version = bytes(3, 0)
-    val hopLimit = bytes(63, 56)
-    val nextHeader = bytes(55, 48)
+    val version = bytes(511, 508)
+    val payloadLen = bytes(479, 464)
+    val nextHeader = bytes(463, 456)
+    val hopLimit = bytes(455, 448)
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
+    newMeta.totalLen := 40.U + payloadLen
 
     val errorCode = Mux(version =/= 6.U, HeaderErrorCode.Ipv4VersionError,
                      Mux(hopLimit === 0.U, HeaderErrorCode.Ipv6HopLimitZero,
@@ -293,26 +240,26 @@ object parseIpv6 {
       newMeta.errorInfo := HeaderErrorCode.Ipv6HopLimitZero
     }
 
-    val nextType = MuxLookup(nextHeader, ProtocolType.UNKNOWN)(
+    val nextType = MuxLookup(nextHeader, HeaderType.UNKNOWN)(
       Seq(
-        ProtocolType.TCP     -> ProtocolType.TCP,
-        ProtocolType.UDP     -> ProtocolType.UDP,
-        ProtocolType.ICMPv6  -> ProtocolType.ICMP,
-        ProtocolType.GRE     -> ProtocolType.GRE
+        ProtocolType.TCP     -> HeaderType.TCP,
+        ProtocolType.UDP     -> HeaderType.UDP,
+        ProtocolType.ICMPv6  -> HeaderType.ICMP,
+        ProtocolType.GRE     -> HeaderType.GRE
       )
     )
-    (bytes(319, 0), nextType, 40.U, newMeta, errorCode, HeaderType.IPV6)
+    newMeta.errorInfo := errorCode
+
+    (bytes(511, 192), nextType, 40.U, newMeta, errorCode, HeaderType.IPV6)
   }
 }
 
 /** Extract TCP header fields */
 object parseTcp {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    // TCP header layout after shiftBytes (header starts at bit 0):
-    // srcPort(15:0), dstPort(31:16), seqNum(63:32), ackNum(95:64),
-    // dataOffset+flags(111:96), window(127:112), checksum(143:128), urgentPtr(159:144)
-    val dataOffset = bytes(111, 104)
-    val headerLen = (Cat(0.U(4.W), dataOffset(3, 0)) * 4.U)(5, 0)
+    // dataOffset 位于第 12 字节（高 4 位），单位为 4 字节
+    val dataOffset = bytes(415, 408)
+    val headerLen = (dataOffset(3, 0) * 4.U)(5, 0)
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
@@ -325,17 +272,17 @@ object parseTcp {
       newMeta.errorInfo := HeaderErrorCode.TcpOffsetError
     }
 
-    (bytes(159, 0), ProtocolType.UNKNOWN, headerLen, newMeta, errorCode, HeaderType.TCP)
+    newMeta.errorInfo := errorCode
+
+    (bytes(511, 352), HeaderType.PAYLOAD, headerLen, newMeta, errorCode, HeaderType.TCP)
   }
 }
 
 /** Extract UDP header fields and determine tunnel type */
 object parseUdp {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    // UDP header layout: srcPort(15:0), dstPort(31:16), length(47:32), checksum(63:48)
-    val srcPort = bytes(15, 0)
-    val dstPort = bytes(31, 16)
-    val length = bytes(47, 32)
+    val dstPort = bytes(495, 480)
+    val length = bytes(479, 464)
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
@@ -348,36 +295,36 @@ object parseUdp {
       newMeta.errorInfo := HeaderErrorCode.UdpLengthError
     }
 
-    val nextType = MuxLookup(dstPort, ProtocolType.UNKNOWN)(
+    val nextType = MuxLookup(dstPort, HeaderType.PAYLOAD)(
       Seq(
-        4789.U -> ProtocolType.VXLAN,
-        6081.U -> ProtocolType.GENEVE,
-        2152.U -> ProtocolType.GTPU,
-        2123.U -> ProtocolType.GTPU
+        4789.U -> HeaderType.VXLAN,
+        6081.U -> HeaderType.GENEVE,
+        2152.U -> HeaderType.GTPU,
+        2123.U -> HeaderType.GTPU
       )
     )
-    (bytes(63, 0), nextType, 8.U, newMeta, errorCode, HeaderType.UDP)
+    newMeta.errorInfo := errorCode
+
+    (bytes(511, 448), nextType, 8.U, newMeta, errorCode, HeaderType.UDP)
   }
 }
 
 /** Extract ICMP header fields */
 object parseIcmp {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    (bytes(63, 0), ProtocolType.UNKNOWN, 8.U, meta, HeaderErrorCode.None, HeaderType.ICMP)
+    (bytes(511, 448), HeaderType.PAYLOAD, 8.U, meta, HeaderErrorCode.None, HeaderType.ICMP)
   }
 }
 
-/** Extract GRE header fields */
+/** Extract GRE header fields (RFC 2784: C/K/S flags, version, protocol type) */
 object parseGre {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    // GRE header format (after shiftBytes, header starts at bit 0):
-    // Bits 0-15: C(1), R(1), K(1), S(1), Flags(4), Version(3), Protocol Type(16)
-    // After shiftBytes: bytes(0) = C, bytes(5) = K, bytes(6) = S, bytes(13,11) = version, bytes(31,16) = protoType
-    val hasChecksum = bytes(0, 0).asBool
-    val hasKey = bytes(5, 5).asBool
-    val hasSequence = bytes(6, 6).asBool
-    val version = bytes(13, 11)
-    val protoType = bytes(31, 16)
+    // 32 位首字: C(bit0) R K S ... Flags | Ver(bit13..15)，其后 16 位为 Protocol Type
+    val hasChecksum = bytes(511, 511).asBool // C
+    val hasKey = bytes(509, 509).asBool      // K
+    val hasSequence = bytes(508, 508).asBool // S
+    val version = bytes(498, 496)
+    val protoType = bytes(495, 480)
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
@@ -394,38 +341,42 @@ object parseGre {
                         Mux(hasKey, 4.U, 0.U) +
                         Mux(hasSequence, 4.U, 0.U)
 
-    val nextType = MuxLookup(protoType, ProtocolType.UNKNOWN)(
+    val nextType = MuxLookup(protoType, HeaderType.PAYLOAD)(
       Seq(
-        EtherType.IPv4 -> EtherType.IPv4,
-        EtherType.IPv6 -> EtherType.IPv6
+        EtherType.IPv4 -> HeaderType.IPV4,
+        EtherType.IPv6 -> HeaderType.IPV6
       )
     )
-    (bytes(31, 0), nextType, headerLen, newMeta, errorCode, HeaderType.GRE)
+    newMeta.errorInfo := errorCode
+
+    (bytes(511, 480), nextType, headerLen, newMeta, errorCode, HeaderType.GRE)
   }
 }
 
-/** Extract VXLAN header fields */
+/** Extract VXLAN header fields (8 bytes; the inner frame is Ethernet) */
 object parseVxlan {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    (bytes(63, 0), EtherType.IPv4, 8.U, meta, HeaderErrorCode.None, HeaderType.VXLAN)
+    (bytes(511, 448), HeaderType.ETH, 8.U, meta, HeaderErrorCode.None, HeaderType.VXLAN)
   }
 }
 
-/** Extract Geneve header fields */
+/** Extract Geneve header fields (8 bytes + options; the inner frame is Ethernet) */
 object parseGeneve {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    val optLen = bytes(7, 2)
-    val headerLen = 8.U + (Cat(0.U(2.W), optLen) * 4.U)(5, 0)
-    (bytes(63, 0), EtherType.IPv4, headerLen, meta, HeaderErrorCode.None, HeaderType.GENEVE)
+    // byte0: Ver(7:6) OptLen(5:0)，单位为 4 字节
+    val optLen = bytes(509, 504)
+    val headerLen = 8.U + (optLen * 4.U)(7, 0)
+    (bytes(511, 448), HeaderType.ETH, headerLen, meta, HeaderErrorCode.None, HeaderType.GENEVE)
   }
 }
 
-/** Extract GTPU header fields */
+/** Extract GTPU header fields (8 bytes + optional extension / sequence / PDU session) */
 object parseGtpu {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    val hasExtension = bytes(2, 2).asBool
-    val hasSequence = bytes(3, 3).asBool
-    val hasPduSession = bytes(4, 4).asBool
+    // byte0: Ver(7:5) PT(4) spare(3) E(2) S(1) PN(0)
+    val hasExtension = bytes(506, 506).asBool // E
+    val hasSequence = bytes(505, 505).asBool  // S
+    val hasPduSession = bytes(504, 504).asBool // PN
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
@@ -433,42 +384,49 @@ object parseGtpu {
     val headerLen = 8.U + Mux(hasExtension, 4.U, 0.U) +
                         Mux(hasSequence, 4.U, 0.U) +
                         Mux(hasPduSession, 4.U, 0.U)
-    (bytes(63, 0), EtherType.IPv4, headerLen, newMeta, HeaderErrorCode.None, HeaderType.GTPU)
+    (bytes(511, 448), HeaderType.IPV4, headerLen, newMeta, HeaderErrorCode.None, HeaderType.GTPU)
   }
 }
 
 /** Extract NSH header fields */
 object parseNsh {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    val length = bytes(15, 10)
-    val nextProto = bytes(31, 24)
-    val headerLen = (Cat(0.U(2.W), length) * 4.U)(5, 0)
+    // byte0: Ver(7:6) O(5) C(4) Len[5:4](3:0)；byte1: Len[3:0](7:4) ...
+    val length = Cat(bytes(507, 504), bytes(503, 502))
+    val nextProto = bytes(487, 480)
+    val headerLen = (length * 4.U)(7, 0)
 
     val newMeta = Wire(new ParseMeta)
     newMeta := meta
 
-    val nextType = MuxLookup(nextProto, ProtocolType.UNKNOWN)(
+    val nextType = MuxLookup(nextProto, HeaderType.UNKNOWN)(
       Seq(
-        1.U -> ProtocolType.NSH,
-        2.U -> EtherType.IPv4,
-        3.U -> EtherType.IPv6,
-        4.U -> EtherType.IPv4
+        1.U -> HeaderType.NSH,
+        2.U -> HeaderType.IPV4,
+        3.U -> HeaderType.IPV6,
+        4.U -> HeaderType.IPV4
       )
     )
-    (bytes(71, 0), nextType, headerLen, newMeta, HeaderErrorCode.None, HeaderType.NSH)
+    (bytes(511, 448), nextType, headerLen, newMeta, HeaderErrorCode.None, HeaderType.NSH)
   }
 }
 
 /** Extract ARP header fields */
 object parseArp {
   def apply(bytes: UInt, meta: ParseMeta): (UInt, UInt, UInt, ParseMeta, UInt, UInt) = {
-    (bytes(223, 0), ProtocolType.UNKNOWN, 28.U, meta, HeaderErrorCode.None, HeaderType.ARP)
+    (bytes(511, 288), HeaderType.PAYLOAD, 28.U, meta, HeaderErrorCode.None, HeaderType.ARP)
   }
 }
 
 // ============= Pipeline Stage Wrapper =============
 
-/** Single-stage registered pipeline for a specific data type */
+/**
+ * Single-stage registered pipeline.
+ *
+ * 下游是 `Valid`（没有反压），所以这里的出口按"每拍必被取走"处理：
+ * 本质是一条 1 拍延迟线（in.ready 恒 1，out.valid = 上一拍的 in.valid）。
+ * 时序上的收益来自把组合逻辑切断，而不是靠反压来攒数据。
+ */
 class PipelineStage[T <: Data](gen: T) extends GenModule {
   val io = IO(new Bundle {
     val in = Flipped(DecoupledIO(gen))
@@ -478,12 +436,11 @@ class PipelineStage[T <: Data](gen: T) extends GenModule {
   val validReg = RegInit(false.B)
   val bitsReg = Reg(chiselTypeOf(io.in.bits))
 
-  io.in.ready := !validReg || io.out.ready
-
-  when(io.in.valid && !validReg) {
+  io.in.ready := true.B
+  when(io.in.valid) {
     validReg := true.B
     bitsReg := io.in.bits
-  }.elsewhen(io.out.ready && validReg) {
+  }.otherwise {
     validReg := false.B
   }
 
@@ -496,25 +453,14 @@ object PipelineStage {
     if (enable) {
       val pipe = Module(new PipelineStage(in.bits.cloneType))
       pipe.io.in <> in
+      pipe.io.out.ready := true.B
       pipe.io.out
     } else {
+      in.ready := true.B
       in
     }
   }
 }
-
-// ============= Interstage Data Bundle =============
-
-/** Data passed between parser stages */
-class InterstageData extends GenBundle {
-  val bytes = UInt(512.W)
-  val meta = new ParseMeta
-  val nextType = UInt(8.W)
-  val parsedBytes = UInt(16.W)
-  val valid = Bool()
-}
-
-
 
 // ============= Main Parser Core =============
 class ParserCore(
@@ -527,10 +473,9 @@ class ParserCore(
     val meta = Output(new ParseMeta)
   })
 
-
   // Parser state machine
   val state = RegInit(ParserState.Idle)
-  val nextState = Wire(ParserState())
+  val nextState = Wire(chiselTypeOf(state))
 
   // Working registers
   val workBytes = Reg(UInt(512.W))
@@ -538,30 +483,27 @@ class ParserCore(
   val workNextType = Reg(UInt(8.W))
   val workParsedBytes = Reg(UInt(16.W))
 
-  // NEW: Header tracking registers
+  // Header tracking registers (PHO/PHI)
   val headerOffsets = Reg(Vec(24, UInt(16.W)))
   val headerDescs = Reg(Vec(24, new PacketHeaderDesc))
   val headerCount = Reg(UInt(5.W))
-  val headerTypes = Reg(Vec(24, UInt(8.W)))  // Track header types for PHO/PHI
 
-  // Result register
-  val resultValid = RegInit(false.B)
-  val resultBits = Reg(new ParseResult)
+  // 流水线握手：本级已发射但结果尚未回收。等待期间不得重复解析 / 重复记录 PHO。
+  val pipeIssued = RegInit(false.B)
 
-  // Initialize
-  workMeta := 0.U.asTypeOf(new ParseMeta)
-  headerCount := 0.U
+  // Output bundle (combinational -- the registers below are updated on the same
+  // cycle as io.out.valid, so a registered result would lag one packet behind).
+  val outBits = Wire(new ParseResult)
+  outBits := 0.U.asTypeOf(new ParseResult)
 
   // Default outputs
   io.out.valid := false.B
-  io.out.bits := resultBits
+  io.out.bits := outBits
   io.parseDone := false.B
   io.meta := workMeta
 
-  // Helper: shift bytes left by N bytes (dropping parsed header)
-  def shiftBytes(bytes: UInt, by: UInt): UInt = {
-    Mux(bytes =/= 0.U, bytes << (by * 8.U), 0.U(512.W))
-  }
+  /** 跳过刚解析完的 `by` 字节（字节 0 在最高位段，故左移把下一层头部顶到最高位）。 */
+  def shiftBytes(bytes: UInt, by: UInt): UInt = bytes << (by * 8.U)
 
   // Helper: convert Valid to Decoupled for pipeline stage
   def validToDecoupled[T <: Data](in: ValidIO[T]): DecoupledIO[T] = {
@@ -586,7 +528,6 @@ class ParserCore(
   def recordHeader(offset: UInt, hdrType: UInt, length: UInt, valid: Bool, errorCode: UInt) = {
     when(headerCount < 24.U) {
       headerOffsets(headerCount) := offset
-      headerTypes(headerCount) := hdrType
       headerDescs(headerCount).headerType := hdrType
       headerDescs(headerCount).offset := offset
       headerDescs(headerCount).length := length
@@ -596,23 +537,74 @@ class ParserCore(
     }
   }
 
+  /**
+   * 发射一级解析结果进入（可选的）级间流水线，并在结果回收时提交到工作寄存器。
+   *
+   * @return (out, advance) —— `advance` 为真的那一拍 FSM 才能前进
+   */
+  def issueStage(
+      bytesNext: UInt,
+      metaNext: ParseMeta,
+      nextTypeNext: UInt,
+      parsedNext: UInt,
+      ok: Bool,
+      pipeEnable: Boolean
+  ): (ValidIO[InterstageData], Bool) = {
+    val in = Wire(Valid(new InterstageData))
+    in.valid := !pipeIssued && ok
+    in.bits.bytes := bytesNext
+    in.bits.meta := metaNext
+    in.bits.nextType := nextTypeNext
+    in.bits.parsedBytes := parsedNext
+    in.bits.valid := ok
+
+    val out = pipeAfter(in, pipeEnable)
+    // 解析出错时结果不会进入流水线，但错误标志必须落到 workMeta 上，
+    // 否则 io.meta / out.bits.valid 反映不出失败原因。
+    when(!ok) {
+      workMeta := metaNext
+    }
+    when(out.valid) {
+      workBytes := out.bits.bytes
+      workMeta := out.bits.meta
+      workNextType := out.bits.nextType
+      workParsedBytes := out.bits.parsedBytes
+      pipeIssued := false.B
+    }.elsewhen(in.valid) {
+      pipeIssued := true.B
+    }
+    (out, out.valid)
+  }
+
+  /** Fill the result bundle from the current working set. */
+  def emitResult(valid: Bool): Unit = {
+    outBits.fields := workBytes
+    outBits.nextType := workNextType
+    outBits.headerLen := workParsedBytes
+    outBits.valid := valid
+    outBits.meta := workMeta
+    outBits.headerCount := headerCount
+    for (i <- 0 until 24) {
+      outBits.pho(i) := headerOffsets(i)
+      outBits.phi(i) := headerDescs(i)
+    }
+    io.out.valid := true.B
+    io.parseDone := true.B
+  }
+
   // Compute next state based on current state
   nextState := state
   switch(state) {
     is(ParserState.Idle) {
       when(io.in.valid) {
         workBytes := io.in.bits
+        workMeta := 0.U.asTypeOf(new ParseMeta)
         workMeta.totalLen := 512.U
-        workMeta.parsedLen := 0.U
-        workMeta.vlanCount := 0.U
-        workMeta.mplsCount := 0.U
         workMeta.checksumValid := true.B
-        workMeta.parseError := false.B
-        workMeta.errorInfo := 0.U
         workParsedBytes := 0.U
-        workNextType := ProtocolType.UNKNOWN
-        resultValid := false.B
+        workNextType := HeaderType.UNKNOWN
         headerCount := 0.U
+        pipeIssued := false.B
         nextState := ParserState.Eth
       }
     }
@@ -620,104 +612,91 @@ class ParserCore(
     is(ParserState.Eth) {
       val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseEthernet(workBytes, workMeta)
 
-      // Record header in PHO/PHI
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      // Prepare interstage data
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := !newMeta.parseError
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := nextType
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := !newMeta.parseError
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterEth
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterEth)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workNextType := interstageOut.bits.nextType
-        workParsedBytes := interstageOut.bits.parsedBytes
-
-        val etherType = workBytes(111, 96)
-        val isVlanEtherType = etherType === EtherType.VLAN || etherType === EtherType.VLAN911
-        val isMplsEtherType = etherType === EtherType.MPLS || etherType === EtherType.MPLS_UNI
-
-        nextState := MuxLookup(etherType, ParserState.Payload)(
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        // workBytes 的更新要到下一拍才生效，这里读到的仍是本层头部
+        nextState := MuxLookup(out.bits.nextType, ParserState.Payload)(
           Seq(
-            EtherType.IPv4 -> ParserState.Ipv4,
-            EtherType.IPv6 -> ParserState.Ipv6,
-            EtherType.ARP  -> ParserState.Arp
+            HeaderType.IPV4 -> ParserState.Ipv4,
+            HeaderType.IPV6 -> ParserState.Ipv6,
+            HeaderType.ARP  -> ParserState.Arp,
+            HeaderType.VLAN -> ParserState.Vlan,
+            HeaderType.MPLS -> ParserState.Mpls
           )
         )
-        when(isVlanEtherType) { nextState := ParserState.Vlan }
-        when(isMplsEtherType) { nextState := ParserState.Mpls }
-      }.elsewhen(interstageIn.valid) {
-        nextState := ParserState.Error
       }
     }
 
     is(ParserState.Vlan) {
       val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseVlan(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := nextType
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := !newMeta.parseError
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterVlan
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterVlan)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workNextType := interstageOut.bits.nextType
-        workParsedBytes := interstageOut.bits.parsedBytes
-
-        val innerType = workBytes(111, 96)
-        val isVlanInner = innerType === EtherType.VLAN || innerType === EtherType.VLAN911
-        val isMplsInner = innerType === EtherType.MPLS || innerType === EtherType.MPLS_UNI
-
-        nextState := ParserState.Payload
-        when(innerType === EtherType.IPv4) { nextState := ParserState.Ipv4 }
-        when(innerType === EtherType.IPv6) { nextState := ParserState.Ipv6 }
-        when(innerType === EtherType.ARP) { nextState := ParserState.Arp }
-        when(isVlanInner) { nextState := ParserState.Vlan }
-        when(isMplsInner) { nextState := ParserState.Mpls }
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        nextState := MuxLookup(out.bits.nextType, ParserState.Payload)(
+          Seq(
+            HeaderType.IPV4 -> ParserState.Ipv4,
+            HeaderType.IPV6 -> ParserState.Ipv6,
+            HeaderType.ARP  -> ParserState.Arp,
+            HeaderType.VLAN -> ParserState.Vlan,
+            HeaderType.MPLS -> ParserState.Mpls
+          )
+        )
       }
     }
 
     is(ParserState.Mpls) {
       val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseMpls(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := nextType
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterMpls
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterMpls)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workNextType := interstageOut.bits.nextType
-        workParsedBytes := interstageOut.bits.parsedBytes
-
-        val bos = !workBytes(8, 8).asBool
-        when(bos) {
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        // workBytes 要到下一拍才更新，下一层头部的首字节在 out.bits.bytes 里
+        when(out.bits.nextType === HeaderType.MPLS) {
           nextState := ParserState.Mpls
         }.otherwise {
-          val ver = workBytes(139, 136)
+          // 栈底之后的猜测：用 IP 版本号区分 v4 / v6，否则当纯载荷
+          val ver = out.bits.bytes(511, 508)
           nextState := Mux(ver === 4.U, ParserState.Ipv4,
                        Mux(ver === 6.U, ParserState.Ipv6,
                          ParserState.Payload))
@@ -728,110 +707,106 @@ class ParserCore(
     is(ParserState.Ipv4) {
       val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseIpv4(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := !newMeta.parseError
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := nextType
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := !newMeta.parseError
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterIpv4
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterIpv4)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workNextType := interstageOut.bits.nextType
-        workParsedBytes := interstageOut.bits.parsedBytes
-
-        nextState := MuxLookup(workNextType, ParserState.Payload)(
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        nextState := MuxLookup(out.bits.nextType, ParserState.Payload)(
           Seq(
-            ProtocolType.TCP  -> ParserState.Tcp,
-            ProtocolType.UDP  -> ParserState.Udp,
-            ProtocolType.ICMP -> ParserState.Icmp,
-            ProtocolType.GRE  -> ParserState.TunnelGre,
-            ProtocolType.MPLS -> ParserState.Mpls
+            HeaderType.TCP  -> ParserState.Tcp,
+            HeaderType.UDP  -> ParserState.Udp,
+            HeaderType.ICMP -> ParserState.Icmp,
+            HeaderType.GRE  -> ParserState.TunnelGre,
+            HeaderType.MPLS -> ParserState.Mpls
           )
         )
-      }.elsewhen(interstageIn.valid) {
-        nextState := ParserState.Error
       }
     }
 
     is(ParserState.Ipv6) {
       val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseIpv6(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := nextType
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := !newMeta.parseError
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterIpv6
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterIpv6)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workNextType := interstageOut.bits.nextType
-        workParsedBytes := interstageOut.bits.parsedBytes
-
-        nextState := MuxLookup(workNextType, ParserState.Payload)(
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        nextState := MuxLookup(out.bits.nextType, ParserState.Payload)(
           Seq(
-            ProtocolType.TCP  -> ParserState.Tcp,
-            ProtocolType.UDP  -> ParserState.Udp,
-            ProtocolType.ICMP -> ParserState.Icmp,
-            ProtocolType.GRE  -> ParserState.TunnelGre
+            HeaderType.TCP  -> ParserState.Tcp,
+            HeaderType.UDP  -> ParserState.Udp,
+            HeaderType.ICMP -> ParserState.Icmp,
+            HeaderType.GRE  -> ParserState.TunnelGre
           )
         )
       }
     }
 
     is(ParserState.Arp) {
-      val (_, _, hdrLen, newMeta, errorCode, hdrType) = parseArp(workBytes, workMeta)
+      val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseArp(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := workBytes
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := ProtocolType.UNKNOWN
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterArp
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterArp)
-
-      when(interstageOut.valid) {
-        workMeta := interstageOut.bits.meta
-        workParsedBytes := interstageOut.bits.parsedBytes
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
         nextState := ParserState.Done
       }
     }
 
     is(ParserState.Tcp) {
-      val (_, _, hdrLen, newMeta, errorCode, hdrType) = parseTcp(workBytes, workMeta)
+      val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseTcp(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := ProtocolType.UNKNOWN
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterTcp
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterTcp)
-
-      when(interstageOut.valid) {
-        workMeta := interstageOut.bits.meta
-        workParsedBytes := interstageOut.bits.parsedBytes
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
         nextState := ParserState.Done
       }
     }
@@ -839,122 +814,122 @@ class ParserCore(
     is(ParserState.Udp) {
       val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseUdp(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := nextType
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterUdp
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterUdp)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workNextType := interstageOut.bits.nextType
-        workParsedBytes := interstageOut.bits.parsedBytes
-
-        nextState := MuxLookup(workNextType, ParserState.Done)(
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        nextState := MuxLookup(out.bits.nextType, ParserState.Done)(
           Seq(
-            ProtocolType.VXLAN  -> ParserState.TunnelVxlan,
-            ProtocolType.GENEVE -> ParserState.TunnelGeneve,
-            ProtocolType.GTPU   -> ParserState.TunnelGtpu
+            HeaderType.VXLAN  -> ParserState.TunnelVxlan,
+            HeaderType.GENEVE -> ParserState.TunnelGeneve,
+            HeaderType.GTPU   -> ParserState.TunnelGtpu
           )
         )
       }
     }
 
     is(ParserState.Icmp) {
-      val (_, _, hdrLen, newMeta, errorCode, hdrType) = parseIcmp(workBytes, workMeta)
+      val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseIcmp(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := workBytes
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := ProtocolType.UNKNOWN
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterIcmp
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterIcmp)
-
-      when(interstageOut.valid) {
-        workMeta := interstageOut.bits.meta
-        workParsedBytes := interstageOut.bits.parsedBytes
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
         nextState := ParserState.Done
       }
     }
 
     is(ParserState.TunnelVxlan) {
-      val (_, _, hdrLen, newMeta, errorCode, hdrType) = parseVxlan(workBytes, workMeta)
+      val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseVxlan(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := EtherType.IPv4
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterVxlan
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterVxlan)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workParsedBytes := interstageOut.bits.parsedBytes
-        nextState := ParserState.Eth
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        nextState := ParserState.Eth   // VXLAN 内层是完整以太网帧
       }
     }
 
     is(ParserState.TunnelGeneve) {
-      val (_, _, hdrLen, newMeta, errorCode, hdrType) = parseGeneve(workBytes, workMeta)
+      val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseGeneve(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := EtherType.IPv4
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterGeneve
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterGeneve)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workParsedBytes := interstageOut.bits.parsedBytes
-        nextState := ParserState.Eth
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        nextState := ParserState.Eth   // Geneve 内层是完整以太网帧
       }
     }
 
     is(ParserState.TunnelGtpu) {
-      val (_, _, hdrLen, newMeta, errorCode, hdrType) = parseGtpu(workBytes, workMeta)
+      val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseGtpu(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := EtherType.IPv4
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterGtpu
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterGtpu)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workParsedBytes := interstageOut.bits.parsedBytes
-        val ver = workBytes(139, 136)
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        // GTPU 内层是 IP，用版本号区分 v4 / v6（下一层头部在 out.bits.bytes）
+        val ver = out.bits.bytes(511, 508)
         nextState := Mux(ver === 4.U, ParserState.Ipv4,
                      Mux(ver === 6.U, ParserState.Ipv6,
                        ParserState.Done))
@@ -964,83 +939,47 @@ class ParserCore(
     is(ParserState.TunnelGre) {
       val (_, nextType, hdrLen, newMeta, errorCode, hdrType) = parseGre(workBytes, workMeta)
 
-      recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      when(!pipeIssued) {
+        recordHeader(workParsedBytes, hdrType, hdrLen, !newMeta.parseError, errorCode)
+      }
 
-      val interstageIn = Wire(Valid(new InterstageData))
-      interstageIn.valid := true.B
-      interstageIn.bits.bytes := shiftBytes(workBytes, hdrLen)
-      interstageIn.bits.meta := newMeta
-      interstageIn.bits.nextType := nextType
-      interstageIn.bits.parsedBytes := workParsedBytes + hdrLen
-      interstageIn.bits.valid := true.B
+      val (out, advance) = issueStage(
+        shiftBytes(workBytes, hdrLen),
+        newMeta,
+        nextType,
+        workParsedBytes + hdrLen,
+        !newMeta.parseError,
+        pipelineConfig.pipeAfterGre
+      )
 
-      val interstageOut = pipeAfter(interstageIn, pipelineConfig.pipeAfterGre)
-
-      when(interstageOut.valid) {
-        workBytes := interstageOut.bits.bytes
-        workMeta := interstageOut.bits.meta
-        workNextType := interstageOut.bits.nextType
-        workParsedBytes := interstageOut.bits.parsedBytes
-
-        nextState := MuxLookup(workNextType, ParserState.Eth)(
+      when(newMeta.parseError) {
+        nextState := ParserState.Error
+      }.elsewhen(advance) {
+        nextState := MuxLookup(out.bits.nextType, ParserState.Done)(
           Seq(
-            EtherType.IPv4 -> ParserState.Ipv4,
-            EtherType.IPv6 -> ParserState.Ipv6
+            HeaderType.IPV4 -> ParserState.Ipv4,
+            HeaderType.IPV6 -> ParserState.Ipv6
           )
         )
       }
     }
 
     is(ParserState.Payload) {
-      // Record payload as final header
       recordHeader(workParsedBytes, HeaderType.PAYLOAD, 0.U, true.B, HeaderErrorCode.None)
       nextState := ParserState.Done
     }
 
     is(ParserState.Done) {
-      resultBits.fields := workBytes
-      resultBits.nextType := workNextType
-      resultBits.headerLen := workParsedBytes
-      resultBits.valid := !workMeta.parseError
-      resultBits.meta := workMeta
-      resultBits.headerCount := headerCount
-
-      // Copy PHO (header offsets) to result
-      for (i <- 0 until 24) {
-        resultBits.pho(i) := headerOffsets(i)
-        resultBits.phi(i) := headerDescs(i)
-      }
-
-      resultValid := true.B
-
-      io.out.valid := true.B
-      io.out.bits := resultBits
-      io.parseDone := true.B
-      io.meta := workMeta
-
+      emitResult(!workMeta.parseError)
+      headerCount := 0.U
+      pipeIssued := false.B
       nextState := ParserState.Idle
     }
 
     is(ParserState.Error) {
-      resultBits.fields := workBytes
-      resultBits.nextType := ProtocolType.UNKNOWN
-      resultBits.headerLen := workParsedBytes
-      resultBits.valid := false.B
-      resultBits.meta := workMeta
-      resultBits.headerCount := headerCount
-
-      // Still copy PHO/PHI even on error
-      for (i <- 0 until 24) {
-        resultBits.pho(i) := headerOffsets(i)
-        resultBits.phi(i) := headerDescs(i)
-      }
-
-      resultValid := true.B
-
-      io.out.valid := true.B
-      io.out.bits := resultBits
-      io.parseDone := true.B
-
+      emitResult(false.B)
+      headerCount := 0.U
+      pipeIssued := false.B
       nextState := ParserState.Idle
     }
   }
@@ -1049,14 +988,13 @@ class ParserCore(
   state := nextState
 
   // Input ready signal
-  io.in.ready := (state === ParserState.Idle) || (state === ParserState.Done) || (state === ParserState.Error)
+  io.in.ready := (state === ParserState.Idle) ||
+                 (state === ParserState.Done) ||
+                 (state === ParserState.Error)
 }
 
 // ============= Companion Object =============
 
 object ParserCore {
   def apply(): ParserCore = Module(new ParserCore(ParserPipelineConfig.default))
-  def apply(config: ParserPipelineConfig): ParserCore = Module(new ParserCore(config))
-  def withAggressiveTiming(): ParserCore = Module(new ParserCore(ParserPipelineConfig.aggressiveTiming))
-  def withMildTiming(): ParserCore = Module(new ParserCore(ParserPipelineConfig.mildTiming))
 }
