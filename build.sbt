@@ -20,4 +20,14 @@ lazy val root = (project in file("."))
       "-Ymacro-annotations",
     ),
     addCompilerPlugin("edu.berkeley.cs" % "chisel3-plugin" % chiselVersion cross CrossVersion.full),
+    // ---------- P4C：P4 → Chisel 编译器，demo 生成管线 ----------
+    p4Generate := {
+      val out = (Compile / sourceManaged).value / "p4c"
+      val copyDir = baseDirectory.value / "generated" / "p4c"
+      val demos = (baseDirectory.value / "p4" / "demos" * "*.p4").get
+      P4C.Generate.generateAll(demos, out, Some(copyDir), streams.value.log.info(_))
+    },
+    Compile / sourceGenerators += Def.task { p4Generate.value }.taskValue,
   )
+
+lazy val p4Generate = taskKey[Seq[File]]("Compile p4/demos/*.p4 into generated Chisel sources")
