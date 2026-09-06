@@ -59,7 +59,7 @@ object DelayModels {
       case _: Ir.Const | _: Ir.InputRef | _: Ir.Cat | _: Ir.Slice |
            _: Ir.Zext | _: Ir.Trunc => 0.0 // 纯布线
       case _: Ir.Not => 0.6 // INV
-      case _: Ir.Mux => 1.2 // 2:1 mux
+      case _: Ir.Mux => 2 // 2:1 mux  Note:change by haoyu @20260906 from 1.2->2
       case Ir.Bin(op, _, _, w) => op match {
         case Ir.And | Ir.Or => 1.6 // NAND/NOR + INV
         case Ir.Xor => 3.0 // XOR2（按位并行，与 w 无关）
