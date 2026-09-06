@@ -1,0 +1,49 @@
+classDiagram
+    class Ir_Dag["Ir.Dag"] {
+        +nodes : Vector[Node]
+        +outputs : Seq[Sink]
+        +stages : Map[NodeId, Int] = Map.empty
+        +isScheduled() Boolean
+        +stageCount() Int
+    }
+    class Scheduler {
+        +maybeSchedule(dag, budget, ctx) Dag
+        +schedule(dag, budget, ctx) Dag
+        -reachable(dag) BitSet
+        -depthOf(dag) Map[NodeId, Int]
+        -checkReadWrite(dag, stages, ctx) Unit
+    }
+    class Emitter {
+        +fireCond : Option[String]
+        +emitSink(s) Unit
+        +emitExprRoot(root) String
+        +takeLines : Seq[String]
+    }
+    class StagedEmitter {
+        -baseValid : String
+        -finalGate : Option[String]
+        -stageOf : Map[NodeId, Int]
+        -crossing : Set[NodeId]
+        +emit() Seq[String]
+        +emitExprAtLastStage(root) String
+        +hasStateful() Boolean
+    }
+    class Generate {
+        +compileFile(p4, out, copy, stages) Result
+        +generateAll(files, out, copy, stages, log) Seq[File]
+        +generateStagedVariants(files, out, stages, log) Seq[File]
+    }
+    class ChiselBackend {
+        +emitProgram(prog, prefix, src, stages) String
+        +emitModules(prog, prefix, src, stages) String
+        -emitControl(prefix, c, prog, tmap, stages) Seq[String]
+        -emitStaticTable(t, ..., stages) Seq[String]
+        -emitParser(prefix, p, prog, tmap) Seq[String]
+        -emitTop(prefix, p, c, prog, tmap, stages) Seq[String]
+    }
+    ChiselBackend ..> Scheduler : maybeSchedule（runAll 之后）
+    ChiselBackend ..> Emitter : stages==1（原路径，字节不变）
+    ChiselBackend ..> StagedEmitter : stages>1
+    StagedEmitter ..> Ir_Dag : 读取 stages
+    Scheduler ..> Ir_Dag : copy(stages=…)
+    Generate ..> ChiselBackend

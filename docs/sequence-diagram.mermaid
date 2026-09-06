@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant G as Generate.compileFile(--stages 4)
+    participant CB as ChiselBackend.emitControl
+    participant P as Passes.runAll
+    participant S as Scheduler.maybeSchedule
+    participant SE as StagedEmitter
+
+    G->>CB: emitControl(stages=4)
+    CB->>P: runAll(dag0)
+    P-->>CB: 优化后 Dag（stages 空）
+    CB->>S: maybeSchedule(dag, 4, "control Ingress/action bump")
+    S->>S: 深度计算 → n=min(4, D+1) → depth 均匀分桶
+    S->>S: D3 读-写断言（Sink 固定末级，结构上恒过）
+    S-->>CB: dag.copy(stages=…), n=4
+    CB->>SE: new StagedEmitter(dag, baseValid="io.valid")
+    SE-->>CB: sV_0..sV_3 链 + v_0_*/v_1_*/v_2_* 边界寄存器 + 末级 when(sV_3) 写
+    CB-->>G: 模块源码（含 outValid := sV_3，valid 端口按 D5 发射）
