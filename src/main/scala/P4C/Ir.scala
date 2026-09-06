@@ -224,24 +224,9 @@ object Passes {
   private def isZero(dag: Dag, id: NodeId): Boolean =
     dag.nodes(id) match { case Const(v, _) => v == 0; case _ => false }
 
-  private def evalOp(op: Op, l: BigInt, r: BigInt, w: BigInt): BigInt = {
-    val mask = (BigInt(1) << w.toInt) - 1
-    op match {
-      case Add => (l + r) & mask
-      case Sub => (l - r) & mask
-      case And => l & r
-      case Or => l | r
-      case Xor => l ^ r
-      case Shl => (l << r.toInt.min(4096)) & mask
-      case Shr => (l >> r.toInt.min(4096)) & mask
-      case Eq => if (l == r) 1 else 0
-      case Neq => if (l != r) 1 else 0
-      case Lt => if (l < r) 1 else 0
-      case Le => if (l <= r) 1 else 0
-      case Gt => if (l > r) 1 else 0
-      case Ge => if (l >= r) 1 else 0
-    }
-  }
+  /** 双目运算语义委托 [[Interp.evalOp]]（唯一实现，避免两份漂移）。 */
+  private def evalOp(op: Op, l: BigInt, r: BigInt, w: BigInt): BigInt =
+    Interp.evalOp(op, l, r, w.toInt)
 
   private def binOpWidth(op: Op, w: Int): Int = op match {
     case Eq | Neq | Lt | Le | Gt | Ge => 1
