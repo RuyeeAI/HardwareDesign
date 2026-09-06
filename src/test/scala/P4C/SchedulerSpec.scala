@@ -270,7 +270,7 @@ class SchedulerSpec extends AnyFlatSpec with Matchers {
     val dag = chainDag(17)
     val n = Scheduler.minFeasibleStages(dag, 2)
     val s = Scheduler.schedule(dag, n, "test/selfcheck")
-    Scheduler.stageDelays(s).foreach(_ should be <= 2)
+    Scheduler.stageDelays(s).foreach(_ should be <= 2.0)
     // 未调度 DAG = 单级，delay = max arrival
     Scheduler.stageDelays(dag) should be(Seq(16))
   }

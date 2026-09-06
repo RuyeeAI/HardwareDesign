@@ -132,7 +132,7 @@ P4cMain <in.p4> <outDir> [copyDir] [--stages N] [--clock W] [--sig-dir <dir>] [-
 | `--stages N` | 全局切拍预算（N ≥ 1；1 = 不切拍，与历史输出逐字节一致） |
 | `--clock W` | 每级最大组合延迟上限（无量纲权重），逐 DAG 自动搜最小可行级数；低于单节点最大权重时报 P4Error 附最小可行周期；**与 `--stages` 互斥** |
 | `--sig-dir <dir>` | 输出签名/调度 JSON（`<前缀>.json`，格式见 §8） |
-| `--delay-model` | 延迟模型：`weighted`（默认）/ `unit` / 外部 JSON 路径（格式见 §9） |
+| `--delay-model` | 延迟模型：`weighted`（默认）/ `unit` / `logiceffort`（Logic Effort，ND2 归一化）/ 外部 JSON 路径（格式见 §9） |
 
 ### 6.2 sbt 集成（build.sbt）
 
@@ -204,16 +204,37 @@ c.io.tbl_rt_table_we.poke(false.B)
 - `dags[].nodes` = 节点 → 流水级映射（未调度全 0 级）——上位机按端口编程、回归工具按调度分析；
 - 供上位机/固件按已知地址空间编程（表深/key 宽/actW/argW 编译期固定并回显）。
 
-## 9. 外部延迟模型 JSON
+## 9. 延迟模型与 clock 预算口径
+
+**所有权重以 ND2（二输入 NAND）门延迟为单位，ND2 一级 = 1.0**（Logic Effort 口径）。`--clock W` 的语义即"每拍最多容纳 W 个 ND2 级"。
+
+### 9.1 内置 `logiceffort` 模型（推荐配合 clock 使用）
+
+| op | ND2 倍数 | 依据 |
+|----|---------|------|
+| Const/InputRef/Cat/Slice/Zext/Trunc | 0 | 纯布线 |
+| Not（INV） | 0.6 | g·h+p = 2τ，ND2 = 10/3 τ |
+| And/Or（NAND/NOR+INV） | 1.6 | 两级门 |
+| Mux（2:1） | 1.2 | g=2, p=2 |
+| Xor（XOR2） | 3.0 | g=4, p=6 |
+| Add/Sub（w 位） | w | 行波进位链上界（综合可建 CLA 更快，高估保守） |
+| Shl/Shr（w 位） | 1.2·log2(w) | 桶形移位：log2(w) 级 2:1 mux |
+| Eq/Neq（w 位） | 3.0+1.6·log2(w) | 按位 XNOR + AND 归约树 |
+| Lt/Le/Gt/Ge（w 位） | 3.0+2.4·log2(w) | 树形比较器 |
+| RegRead（size 项） | 1.2·log2(size) | 读 mux 树 |
+
+示例：`P4C_DELAY_MODEL=logiceffort P4C_CLOCK=24 sbt compile`——每拍 ≤ 24 个 ND2 级；16 位加法器占 16 级，clock=8 时会如实报"不可行（最小可行 clock = 16）"（节点原子、不可跨级切分）。
+
+### 9.2 外部延迟模型 JSON
 
 ```json
-{ "Const":0, "InputRef":0, "Cat":0, "Slice":0, "Zext":0, "Trunc":0, "Not":0,
-  "Bin":1, "Bin(Add)":2, "Mux":1, "RegRead":2 }
+{ "Const":0, "InputRef":0, "Cat":0, "Slice":0, "Zext":0, "Trunc":0, "Not":0.6,
+  "Bin":1.6, "Bin(Add)":16, "Mux":1.2, "RegRead":3.6 }
 ```
 
-- 必需项：Const/InputRef/Cat/Slice/Zext/Trunc/Not/Bin/Mux/RegRead（缺项 P4Error）；
-- `Bin(Add)` 细分覆盖 `Bin` 通配；权重口径：0 = 纯布线，k = k 级逻辑深度当量；
-- clock 模式的"每级延迟上限"即以该口径度量。
+- 必需项：Const/InputRef/Cat/Slice/Zext/Trunc/Not/Bin/Mux/RegRead（缺项 P4Error）；**允许小数**（ND2 倍数口径）；
+- `Bin(Add)` 细分覆盖 `Bin` 通配；
+- 数值口径与 `--clock` 一致：均为 ND2 级数。
 
 ## 10. 生成代码与集成
 

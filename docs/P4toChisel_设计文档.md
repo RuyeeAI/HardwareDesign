@@ -105,13 +105,16 @@ Sink：`OutputWrite(path) / RegWrite / CounterAdd`。
 
 ## 6. 调度（SchedulePass.scala）
 
-### 6.1 延迟模型（DelayModel.scala，X6）
+### 6.1 延迟模型（DelayModel.scala，X6/X7）
 
-`trait DelayModel { def weight(n): Int }`——节点整数逻辑代价（0 = 纯布线）。内置：
+`trait DelayModel { def weight(n): Double }`——节点延迟代价，**口径 = 相对 ND2（二输入 NAND）门延迟的倍数，ND2 一级 = 1.0**（X7 起统一为小数口径；0 = 纯布线）。内置：
 
 - `weighted`（默认，E1 表）：Cat/Slice/Zext/Trunc/Not/Const/InputRef = 0；Bin/Mux = 1；RegRead = 2；
 - `unit`（XLS unit 对标）：叶子 0，其余 1；
-- 外部 JSON：op 名→权重，可按 `Bin(Add)` 按运算符细分，缺项 P4Error。工艺特征化模型实现 trait 即可接入。
+- `logiceffort`（X7，Logic Effort）：单门 op 按 `d = (g·h+p)/(g_ND2·h+p_ND2)`（参考扇出 h=1）：INV 0.6、NAND/NOR+INV（And/Or）1.6、XOR2 3.0、2:1 mux 1.2；复合 op 按门网络展开——Add/Sub = w（行波进位链上界）、Shl/Shr = 1.2·log2(w)（桶形移位）、Eq/Neq = 3.0+1.6·log2(w)、比较器 = 3.0+2.4·log2(w)、RegRead = 1.2·log2(size)（读 mux 树）。高估方向保守（真实综合可构建 CLA 等）；
+- 外部 JSON：op 名→权重（允许小数），可按 `Bin(Add)` 按运算符细分，缺项 P4Error。工艺特征化模型实现 trait 即可接入。
+
+已知简化：忽略扇出负载（h=1）与线电容；单节点视为原子不可跨级切分——16-bit 加法器（16 级）在 clock<16 时如实报不可行。
 
 ### 6.2 调度算法
 

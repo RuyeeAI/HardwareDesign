@@ -28,6 +28,12 @@ import scala.collection.mutable
   *
   * `weighted = false` 保留旧的均匀深度分桶（Const/InputRef 深度 0，其余
   * depth = 1 + max(操作数深度)），仅作测试对照，不用于生产路径。
+  *
+  * X7：加权值升级为 **Logic Effort 口径**（[[DelayModel]]）——节点代价 = 相对
+  * ND2（二输入 NAND，归一化 1.0）的延迟倍数，可为小数；内置 `logiceffort` 模型
+  * 按 LE 理论取值（INV 0.6 / 2:1 mux 1.2 / XOR2 3.0 / 加法器 w 级行波上界…），
+  * clock 模式的预算即"每拍可容纳的 ND2 级数"。整数模型（weighted/unit）在
+  * Double 运算下与历史结果逐点一致（floor(d·n/(W+1)) = 整数除法截断）。
   */
 object Scheduler {
 
@@ -40,11 +46,16 @@ object Scheduler {
   ): Ir.Dag =
     if (budget == 1) dag else schedule(dag, budget, ctx, weighted, model)
 
-  /** 节点逻辑代价（E1 权重表，现由 [[DelayModel]] 提供，X6 外置）：0 = 纯布线/零逻辑，1 = 一级算术/选择，2 = 存储读。 */
-  private def weight(n: Ir.Node, model: DelayModel): Int = model.weight(n)
+  /** 节点逻辑代价（由 [[DelayModel]] 提供，X7 Logic Effort 模型为小数 ND2 倍数）。 */
+  private def weight(n: Ir.Node, model: DelayModel): Double = model.weight(n)
 
   /** 按加权深度（默认）或均匀深度（weighted=false，测试对照）分桶调度，
-    * 返回带 stages 标注的 DAG（节点集合不变）。 */
+    * 返回带 stages 标注的 DAG（节点集合不变）。
+    *
+    * X7：加权深度与分桶升级为 Double（Logic Effort 倍数可为小数）；对整数
+    * 模型（weighted/unit）Double 运算精确，`floor(d·n/(W+1))` 与原整数除法
+    * 截断逐点一致——历史输出零回归。
+    */
   def schedule(
     dag: Ir.Dag, budget: Int, ctx: String = "", weighted: Boolean = true,
     model: DelayModel = DelayModels.default,
@@ -65,17 +76,17 @@ object Scheduler {
 
     // 2. 深度（memoized）。NodeId 升序即拓扑序（Builder 追加构造，操作数恒为更早节点）。
     //    weighted：wd = weight + max(wd(操作数))；unweighted：旧公式（Const/InputRef 0，其余 1+max）。
-    val depth = mutable.HashMap.empty[Ir.NodeId, Int]
+    val depth = mutable.HashMap.empty[Ir.NodeId, Double]
     (0 until dag.nodes.length).foreach { id =>
       if (reach(id)) {
         val base =
           if (weighted) weight(dag.nodes(id), model)
           else dag.nodes(id) match {
-            case _: Ir.Const | _: Ir.InputRef => 0
-            case _ => 1
+            case _: Ir.Const | _: Ir.InputRef => 0.0
+            case _ => 1.0
           }
         depth(id) = base + (Ir.operands(dag.nodes(id)) match {
-          case Seq() => 0
+          case Seq() => 0.0
           case ops => ops.map(depth).max
         })
       }
@@ -85,13 +96,13 @@ object Scheduler {
     // E1：W=0 —— 全布线 DAG（可达节点全部零代价），没有可切的逻辑级：
     // 等同 budget=1，直接不调度（stages 保持空，走原组合发射路径；同时避免
     // 下面的分母 W+1 无意义地产生全 0 级"伪流水"）。
-    if (weighted && maxDepth == 0) return dag
+    if (weighted && maxDepth == 0.0) return dag
 
-    // 3. 均匀分桶：stage(id) = min(n-1, depth(id) * n / (W+1))
-    val nStages = math.min(budget, maxDepth + 1)
-    val denom = maxDepth + 1
+    // 3. 均匀分桶：stage(id) = min(n-1, floor(depth(id) * n / (W+1)))
+    val nStages = math.min(budget, math.ceil(maxDepth).toInt + 1)
+    val denom = maxDepth + 1.0
     val stageMap: Map[Ir.NodeId, Int] = depth.toMap.map { case (id, d) =>
-      id -> math.min(nStages - 1, d * nStages / denom)
+      id -> math.min(nStages - 1, math.floor(d * nStages / denom).toInt)
     }
 
     // 4. D3 读-写校验（防御性断言：Sink 固定末级下结构上恒过，守护未来优化）
@@ -103,7 +114,7 @@ object Scheduler {
   // ---------------- X2：时钟约束模式（对标 XLS 两阶段调度 / minimize_clock_on_failure） ----------------
 
   /** 可达节点的加权深度表 arrival(x)（与 [[schedule]] 加权路径同口径）。 */
-  private def depths(dag: Ir.Dag, model: DelayModel): Map[Ir.NodeId, Int] = {
+  private def depths(dag: Ir.Dag, model: DelayModel): Map[Ir.NodeId, Double] = {
     val reach = mutable.BitSet.empty
     def visit(id: Ir.NodeId): Unit =
       if (!reach(id)) {
@@ -111,11 +122,11 @@ object Scheduler {
         Ir.operands(dag.nodes(id)).foreach(visit)
       }
     dag.outputs.foreach(Ir.visitSink(_, visit))
-    val depth = mutable.HashMap.empty[Ir.NodeId, Int]
+    val depth = mutable.HashMap.empty[Ir.NodeId, Double]
     (0 until dag.nodes.length).foreach { id =>
       if (reach(id)) {
         depth(id) = weight(dag.nodes(id), model) + (Ir.operands(dag.nodes(id)) match {
-          case Seq() => 0
+          case Seq() => 0.0
           case ops => ops.map(depth).max
         })
       }
@@ -123,23 +134,25 @@ object Scheduler {
     depth.toMap
   }
 
-  /** clock 约束的结构下界：最大单节点权重（单节点不可再切分）。
+  /** clock 约束的结构下界：最大单节点延迟（单节点不可再切分，向上取整到整数
+    * ND2 级——clock 预算为整数级数）。
     * clockW < minClock 时不存在任何可行调度（XLS minimize_clock_on_failure 的等价报告）。 */
   def minClock(dag: Ir.Dag, model: DelayModel = DelayModels.default): Int = {
     val d = depths(dag, model)
-    d.keys.map(id => model.weight(dag.nodes(id))).foldLeft(0)(math.max)
+    if (d.isEmpty) return 0
+    math.ceil(d.keys.map(id => model.weight(dag.nodes(id))).foldLeft(0.0)(math.max)).toInt
   }
 
-  /** 调度结果的各级组合延迟（加权口径）：delay(k) = max(arrival ∈ k) − start(k)，
+  /** 调度结果的各级组合延迟（ND2 级数口径）：delay(k) = max(arrival ∈ k) − start(k)，
     * start(k) = min(arrival(x) − weight(x), x ∈ k)（本级行入点的最早到达）。
     * 未调度 DAG 视为单级：delay = max(arrival)。 */
-  def stageDelays(dag: Ir.Dag, model: DelayModel = DelayModels.default): Seq[Int] = {
+  def stageDelays(dag: Ir.Dag, model: DelayModel = DelayModels.default): Seq[Double] = {
     val d = depths(dag, model)
-    if (d.isEmpty) return Seq(0)
+    if (d.isEmpty) return Seq(0.0)
     if (!dag.isScheduled) return Seq(d.values.max)
     (0 until dag.stageCount).map { k =>
       val inStage = d.collect { case (id, a) if dag.stages.getOrElse(id, 0) == k => (id, a) }
-      if (inStage.isEmpty) 0
+      if (inStage.isEmpty) 0.0
       else {
         val start = inStage.map { case (id, a) => a - weight(dag.nodes(id), model) }.min
         inStage.values.max - start
@@ -147,9 +160,10 @@ object Scheduler {
     }
   }
 
-  /** clock 模式：给定每级组合延迟上限 clockW，求最小可行级数（线性扫描 1..W+1，
-    * 取首个每级延迟 ≤ clockW 的 n；扫描而非二分，规避分桶映射的非严格单调性假设）。
-    * clockW 低于 [[minClock]] 时抛 [[P4Error]] 并报告最小可行周期。 */
+  /** clock 模式：给定每级可容纳的 ND2 级数上限 clockW（X7：Logic Effort 口径），
+    * 求最小可行级数（线性扫描 1..floor(W)+1，取首个每级延迟 ≤ clockW 的 n；
+    * 扫描而非二分，规避分桶映射的非严格单调性假设）。
+    * clockW 低于 [[minClock]]（ceil 到整数级）时抛 [[P4Error]] 并报告最小可行周期。 */
   def minFeasibleStages(
     dag: Ir.Dag, clockW: Int, ctx: String = "", model: DelayModel = DelayModels.default,
   ): Int = {
@@ -157,13 +171,13 @@ object Scheduler {
     if (clockW < 1) throw new P4Error(s"${where}clock 约束必须 ≥ 1（got $clockW）")
     val mc = minClock(dag, model)
     if (clockW < mc)
-      throw new P4Error(s"${where}clock=$clockW 不可行：单节点最大权重 $mc 已超约束（最小可行 clock = $mc）")
+      throw new P4Error(s"${where}clock=$clockW 不可行：单节点最大延迟 $mc 级已超约束（最小可行 clock = $mc）")
     val d = depths(dag, model)
-    if (d.isEmpty || d.values.max == 0) return 1 // 全布线 DAG / 空 DAG：无需切拍
+    if (d.isEmpty || d.values.max == 0.0) return 1 // 全布线 DAG / 空 DAG：无需切拍
     val maxW = d.values.max
-    (1 to maxW + 1).find { n =>
+    (1 to math.floor(maxW).toInt + 1).find { n =>
       stageDelays(schedule(dag, n, ctx, model = model), model).forall(_ <= clockW)
-    }.getOrElse(maxW + 1)
+    }.getOrElse(math.floor(maxW).toInt + 1)
   }
 
   /** D3：RegRead 与同名 RegWrite/CounterAdd 跨级读-写次序校验。
