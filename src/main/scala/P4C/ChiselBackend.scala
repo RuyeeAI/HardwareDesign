@@ -463,7 +463,7 @@ object ChiselBackend {
   private def emitControl(
     prefix: String, c: ControlDecl, prog: P4Program, tmap: String => String, globalStages: Int = 1,
     sigs: Option[mutable.ArrayBuffer[Signature.ControlSig]] = None,
-    clock: Option[Int] = None,
+    clock: Option[Int] = None, model: DelayModel = DelayModels.default,
   ): (Seq[String], Int) = {
     // E2：声明级指示覆盖全局预算（无指示 → 全局值；全局 1 且无指示 → 与历史逐字节一致）
     val stages = c.stagesOpt.getOrElse(globalStages)
@@ -570,7 +570,7 @@ object ChiselBackend {
 
     /** 预算解算：声明级指示 > clock 模式（逐 DAG 最小可行级数）> 全局固定 N。 */
     def budgetOf(dag: Dag, ctx: String): Int = c.stagesOpt.getOrElse(clock match {
-      case Some(w) => Scheduler.minFeasibleStages(dag, w, ctx)
+      case Some(w) => Scheduler.minFeasibleStages(dag, w, ctx, model)
       case None => globalStages
     })
 
@@ -642,8 +642,8 @@ object ChiselBackend {
             emitRuntimeTable(t, c, prog, resolver, externMap, stateful, s"$IND", rtLayouts(t.name), recordDag)
           } else {
             if (t.entries.isEmpty) throw new P4Error(s"行 $ln：table '$n' 无 const entries（M2 仅支持静态融合）")
-            val clockRes = clock.map { w => (d: Dag) => Scheduler.minFeasibleStages(d, w, s"table ${t.name}") }
-            emitStaticTable(t, c, prog, resolver, externMap, stateful, s"$IND", stages, shared, recordDag, clockRes)
+            val clockRes = clock.map { w => (d: Dag) => Scheduler.minFeasibleStages(d, w, s"table ${t.name}", model) }
+            emitStaticTable(t, c, prog, resolver, externMap, stateful, s"$IND", stages, shared, recordDag, clockRes, model)
           }
         out ++= lines
         maxStageCount = math.max(maxStageCount, tableN)
@@ -717,6 +717,7 @@ object ChiselBackend {
     stages: Int = 1, shared: StagedShared = null,
     recordDag: (String, Ir.Dag) => Unit = (_, _) => (),
     clockRes: Option[Ir.Dag => Int] = None,
+    model: DelayModel = DelayModels.default,
   ): (Seq[String], Int) = {
     val out = mutable.ArrayBuffer.empty[String]
     out += s"$indent// table ${t.name}（静态融合，${t.entries.size} 项）"
@@ -749,7 +750,7 @@ object ChiselBackend {
       val d0 = lowerEntry(e, resolver, c, prog, externMap)
       val ctx = s"table ${t.name}/${e.action}"
       val n = nOf(d0, ctx)
-      if (n > 1) Scheduler.maybeSchedule(d0, n, ctx) else d0
+      if (n > 1) Scheduler.maybeSchedule(d0, n, ctx, model = model) else d0
     }
     val entryDags = nonDefault.zipWithIndex.map { case (e, i) =>
       EntryDag(e, schedEntry(e), hits = true, idx = i)
@@ -1234,7 +1235,7 @@ object ChiselBackend {
   def emitModules(
     prog: P4Program, moduleNamePrefix: String, sourceName: String, stages: Int = 1,
     sigs: Option[mutable.ArrayBuffer[Signature.ControlSig]] = None,
-    clock: Option[Int] = None,
+    clock: Option[Int] = None, model: DelayModel = DelayModels.default,
   ): (String, Map[String, Int]) = {
     if (stages < 1) throw new P4Error(s"拍数预算 N 必须 ≥ 1（got $stages）")
     val tmap0 = typeMapOf(prog, moduleNamePrefix)
@@ -1257,7 +1258,7 @@ object ChiselBackend {
     out ++= emitBundles(prog, tmap)
     val stageCounts = mutable.LinkedHashMap.empty[String, Int]
     prog.controls.foreach { c =>
-      val (lines, n) = emitControl(moduleNamePrefix, c, prog, tmap, stages, sigs, clock)
+      val (lines, n) = emitControl(moduleNamePrefix, c, prog, tmap, stages, sigs, clock, model)
       out ++= lines; out += ""
       stageCounts(c.name) = n
     }
@@ -1366,9 +1367,9 @@ object ChiselBackend {
   def emitProgram(
     prog: P4Program, moduleNamePrefix: String, sourceName: String, stages: Int = 1,
     sigs: Option[mutable.ArrayBuffer[Signature.ControlSig]] = None,
-    clock: Option[Int] = None,
+    clock: Option[Int] = None, model: DelayModel = DelayModels.default,
   ): String = {
-    val (modules, _) = emitModules(prog, moduleNamePrefix, sourceName, stages, sigs, clock)
+    val (modules, _) = emitModules(prog, moduleNamePrefix, sourceName, stages, sigs, clock, model)
     emitTypes(prog) + "\n" + modules
   }
 

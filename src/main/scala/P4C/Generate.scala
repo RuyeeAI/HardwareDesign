@@ -37,7 +37,8 @@ object Generate {
     * @param sigDir 签名/调度 JSON 输出目录（None = 不导出）
     * @param clock 时钟约束（每级最大权重上限；X2 clock 模式，与 stages 互斥） */
   def compileFile(p4Path: Path, outDir: Path, copyDir: Option[Path], stages: Int = 1,
-      sigDir: Option[Path] = None, clock: Option[Int] = None): Result = {
+      sigDir: Option[Path] = None, clock: Option[Int] = None,
+      model: DelayModel = DelayModels.default): Result = {
     checkStages(stages)
     val src = new String(Files.readAllBytes(p4Path), StandardCharsets.UTF_8)
     val (prog, warnings) = Parser.parseProgramWithDiagnostics(src)
@@ -47,7 +48,7 @@ object Generate {
     val modules =
       prog.controls.map(_.name) ++ prog.parsers.map(_ + "Parser")
     val sigBuf = if (sigDir.isDefined) Some(scala.collection.mutable.ArrayBuffer.empty[Signature.ControlSig]) else None
-    val code = ChiselBackend.emitProgram(prog, prefix, p4Path.getFileName.toString, stages, sigBuf, clock)
+    val code = ChiselBackend.emitProgram(prog, prefix, p4Path.getFileName.toString, stages, sigBuf, clock, model)
     directiveLogs(prog, p4Path.getFileName.toString).foreach(println)
 
     Files.createDirectories(outDir)
@@ -68,7 +69,8 @@ object Generate {
 
   /** 批量编译（sbt sourceGenerators 入口）。每个生成文件自带带前缀的 Bundle。返回生成的托管源文件列表。 */
   def generateAll(files: Seq[java.io.File], outDir: java.io.File, copyDir: Option[java.io.File], stages: Int = 1, log: String => Unit,
-      sigDir: Option[java.io.File] = None, clock: Option[Int] = None): Seq[java.io.File] = {
+      sigDir: Option[java.io.File] = None, clock: Option[Int] = None,
+      model: DelayModel = DelayModels.default): Seq[java.io.File] = {
     checkStages(stages)
     val outs = scala.collection.mutable.ArrayBuffer.empty[java.io.File]
     Files.createDirectories(outDir.toPath)
@@ -80,7 +82,7 @@ object Generate {
         val prefix = pascalStem(f.getName)
         val out = outDir.toPath.resolve(s"$prefix.scala")
         val sigBuf = if (sigDir.isDefined) Some(scala.collection.mutable.ArrayBuffer.empty[Signature.ControlSig]) else None
-        val (code, stageCounts) = ChiselBackend.emitModules(prog, prefix, f.getName, stages, sigBuf, clock)
+        val (code, stageCounts) = ChiselBackend.emitModules(prog, prefix, f.getName, stages, sigBuf, clock, model)
         Files.write(out, code.getBytes(StandardCharsets.UTF_8))
         copyDir.foreach { d =>
           Files.createDirectories(d.toPath)
@@ -155,6 +157,7 @@ object P4cMain {
     var clockW = 0
     var clockGiven = false
     var sigDir: Option[java.nio.file.Path] = None
+    var modelSpec: Option[String] = None
     var usage = false
     var i = 0
     while (i < args.length && !usage) {
@@ -178,6 +181,9 @@ object P4cMain {
         case "--sig-dir" =>
           if (i + 1 >= args.length) usage = true
           else { sigDir = Some(java.nio.file.Paths.get(args(i + 1))); i += 1 }
+        case "--delay-model" =>
+          if (i + 1 >= args.length) usage = true
+          else { modelSpec = Some(args(i + 1)); i += 1 }
         case a => positional += a
       }
       i += 1
@@ -191,13 +197,17 @@ object P4cMain {
       System.exit(1)
     }
     val clock = if (clockGiven) Some(clockW) else None
+    val model = modelSpec match {
+      case Some(s) => DelayModels.load(s)
+      case None => DelayModels.default
+    }
     if (usage || stages < 1 || positional.length < 2 || positional.length > 3) {
-      System.err.println("用法: P4cMain <in.p4> <outDir> [copyDir] [--stages N] [--clock W] [--sig-dir <dir>]" +
+      System.err.println("用法: P4cMain <in.p4> <outDir> [copyDir] [--stages N] [--clock W] [--sig-dir <dir>] [--delay-model weighted|unit|<file.json>]" +
         "   （N/W ≥ 1；--stages 1 = 不切拍；--clock = 每级最大权重上限，自动搜最小可行级数）")
       System.exit(1)
     }
     val copyOpt = if (positional.length > 2) Some(Paths.get(positional(2))) else None
-    val r = Generate.compileFile(Paths.get(positional(0)), Paths.get(positional(1)), copyOpt, stages, sigDir, clock)
+    val r = Generate.compileFile(Paths.get(positional(0)), Paths.get(positional(1)), copyOpt, stages, sigDir, clock, model)
     println(s"[P4C] ${r.p4File} -> ${r.scalaFile} (modules: ${r.modules.mkString(", ")})")
   }
 }
