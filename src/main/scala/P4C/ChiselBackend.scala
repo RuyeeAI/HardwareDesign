@@ -168,6 +168,10 @@ object ChiselBackend {
     private var chainSeq = 0
     private var tSeq = 0
     private val vSeq = mutable.HashMap.empty[Int, Int]
+    // X3（XLS register_merge_strategy=identity 对标）：跨 DAG 同值边界寄存器合并缓存。
+    // key = (末级 valid 信号名, 表达式文本, 位宽)：sV 名相同 ⇒ 同链同拍使能；表达式文本
+    // 相同 ⇒ 值语义相同（叶子文本含实际信号路径，跨表/跨上下文不会误撞）。
+    private val regCache = mutable.HashMap.empty[(String, String, Int), String]
     private val usedLastBuf = mutable.LinkedHashSet.empty[String]
 
     /** 取得（必要时在 prelude 中发射）baseValid 起、n 级的 valid 链，返回各级 sV 名。 */
@@ -190,11 +194,19 @@ object ChiselBackend {
 
     def freshT(): String = { val s = s"t$tSeq"; tSeq += 1; s }
 
-    def freshV(k: Int): String = {
-      val j = vSeq.getOrElse(k, 0)
-      vSeq(k) = j + 1
-      s"v_${k}_$j"
-    }
+    /** 边界寄存器命名 + 同值合并：命中缓存返回既有 val 名（isNew=false，发射方
+      * 跳过 RegEnable 定义行）；未命中分配新名并登记。 */
+    def boundaryReg(sVName: String, expr: String, width: Int): (String, Boolean) =
+      regCache.get((sVName, expr, width)) match {
+        case Some(n) => (n, false)
+        case None =>
+          val k = sVName.substring(sVName.lastIndexOf('_') + 1).toInt
+          val j = vSeq.getOrElse(k, 0)
+          vSeq(k) = j + 1
+          val name = s"v_${k}_$j"
+          regCache((sVName, expr, width)) = name
+          (name, true)
+      }
 
     /** 本上下文内所有已用 valid 链的末级名（多链时 outValid 取与）。 */
     def usedLastStages: Seq[String] = usedLastBuf.toSeq
@@ -309,9 +321,9 @@ object ChiselBackend {
             val expr = go(id)
             if (crossing(id)) {
               val w = dag.nodes(id).width
-              val name = shared.freshV(k)
+              val (name, isNew) = shared.boundaryReg(sV(k), expr, w)
               boundary(id) = name
-              lines += s"${indent}val $name = RegEnable($expr, 0.U($w.W), ${sV(k)})"
+              if (isNew) lines += s"${indent}val $name = RegEnable($expr, 0.U($w.W), ${sV(k)})"
             }
           }
         }
