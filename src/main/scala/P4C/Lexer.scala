@@ -77,29 +77,73 @@ object Lexer {
   }
 }
 
-/** 去掉块注释、行注释和预处理指令行（#include、#define 等）。 */
+/** 去掉块注释、行注释和预处理指令行（#include、#define 等）。
+  *
+  * 行号保持不变量（E2 依赖）：剥除注释/指令后**换行数与原文一致**——行注释与
+  * 预处理行本就保留行尾换行；块注释内每个换行改写为一个空白换行保留。
+  * 因此词法/语法侧的行号与原始源码行号一一对应，[[Directive]] 可直接按原始
+  * 行号匹配指示。剥除的内容对词法器均为不可见（换行 = 空白），token 流不变。
+  */
 object Preprocess {
-  def apply(src: String): String = {
-    val sb = new StringBuilder
-    var i = 0
+
+  /** 注释/预处理行分类状态机（**唯一实现，供两处消费**）。
+    * 返回与 src 等长的分类数组：0 = Code，1 = 行注释或预处理行，2 = 块注释。
+    *   - [[apply]]：剥除一切非 Code 字符（保留其中换行）→ 词法视图；
+    *   - [[Directive.scan]]：触发段落进 **2（块注释）** → "注释掉的指示"抑制
+    *     （不生效、不报错、仅告警）；落进 1（行注释）是指示的正常所在，不抑制。
+    *
+    * 分类规则（与历史 apply 分支逐一对应，含 `lineStart` 怪癖——只有代码路径上
+    * 的换行会刷新 lineStart，因此紧随块注释之后的 '#/…' 仍按预处理行处理）：
+    *   - '#/…' 整行（lineStart 起）→ 1（词法上整行剥除；# 行首字符是 '#'，
+    *     不可能匹配 Directive 的行首双斜杠触发锚点，两侧无歧义）；
+    *   - 行注释（双斜杠）起至行尾 → 1；
+    *   - 块注释（斜杠-星 … 星-斜杠）起止定界符与内部 → 2；未闭合 → 至文末。
+    */
+  private[P4C] def classify(src: String): Array[Byte] = {
     val n = src.length
+    val code = Array.fill(n)(0.toByte)
+    var i = 0
     var lineStart = true
     while (i < n) {
       val c = src.charAt(i)
-      if (lineStart && c == '#') { // 跳过预处理行
-        while (i < n && src.charAt(i) != '\n') i += 1
+      if (lineStart && c == '#') { // 预处理行：整行按 1（apply 整行剥除）
+        while (i < n && src.charAt(i) != '\n') { code(i) = 1.toByte; i += 1 }
         lineStart = false
       } else if (c == '/' && i + 1 < n && src.charAt(i + 1) == '/') {
-        while (i < n && src.charAt(i) != '\n') i += 1
+        while (i < n && src.charAt(i) != '\n') { code(i) = 1.toByte; i += 1 }
       } else if (c == '/' && i + 1 < n && src.charAt(i + 1) == '*') {
-        i += 2
-        while (i + 1 < n && !(src.charAt(i) == '*' && src.charAt(i + 1) == '/')) i += 1
-        i += 2
+        code(i) = 2.toByte; code(i + 1) = 2.toByte; i += 2
+        while (i + 1 < n && !(src.charAt(i) == '*' && src.charAt(i + 1) == '/')) {
+          code(i) = 2.toByte; i += 1
+        }
+        if (i + 1 < n) { code(i) = 2.toByte; code(i + 1) = 2.toByte; i += 2 }
+        else if (i < n) { code(i) = 2.toByte; i += 1 } // 未闭合块注释：2 至文末
       } else {
-        sb.append(c)
         lineStart = c == '\n'
         i += 1
       }
+    }
+    code
+  }
+
+  /** 去掉块注释、行注释和预处理指令行（#include、#define 等）。
+    *
+    * 行号保持不变量（E2 依赖）：剥除注释/指令后**换行数与原文一致**——行注释与
+    * 预处理行本就保留行尾换行；块注释内每个换行改写为一个空白换行保留。
+    * 因此词法/语法侧的行号与原始源码行号一一对应，[[Directive]] 可直接按原始
+    * 行号匹配指示。剥除的内容对词法器均为不可见（换行 = 空白），token 流不变。
+    *
+    * 实现即 [[classify]] 的消费端：Code 字符照抄，其余仅保留换行。
+    */
+  def apply(src: String): String = {
+    val code = classify(src)
+    val sb = new StringBuilder(src.length)
+    var i = 0
+    val n = src.length
+    while (i < n) {
+      val c = src.charAt(i)
+      if (code(i) == 0 || c == '\n') sb.append(c) // 换行恒保留：行号不变量
+      i += 1
     }
     sb.toString
   }

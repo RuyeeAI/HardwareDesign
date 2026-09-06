@@ -5,10 +5,23 @@ import P4C.Lexer._
 
 final class P4Error(msg: String) extends RuntimeException(msg)
 
-/** P4-16 子集递归下降语法分析。 */
-class Parser(toks0: Seq[Tok]) {
+/** P4-16 子集递归下降语法分析。
+  *
+  * E2：构造时可传入 [[Directive.scan]] 结果；`control`/`parser`/`action` 声明
+  * 解析时按紧邻性（指示行与声明行之间只允许空白行）匹配指示，写入
+  * `decl.stagesOpt`。被声明认领的指示行记入 [[claimed]]，解析结束后未认领的
+  * 指示由 [[Parser$.parseProgramWithDiagnostics]] 生成忽略告警。
+  */
+class Parser(toks0: Seq[Tok], scan: Directive.ScanResult = Directive.ScanResult.empty) {
   private val toks = toks0.toArray
   private var pos = 0
+
+  /** 已被某个声明认领的指示行号（1 基），供孤儿指示告警。 */
+  val claimed: scala.collection.mutable.Set[Int] = scala.collection.mutable.Set.empty[Int]
+
+  /** 声明行 declLine 上的声明级切拍指示（紧邻性校验见 [[Directive.stageFor]]）。 */
+  private def directiveAt(declLine: Int): Option[Int] =
+    Directive.stageFor(scan, declLine, claimed)
 
   private def cur: Tok = toks(pos)
   private def line: Int = cur.line
@@ -131,7 +144,7 @@ class Parser(toks0: Seq[Tok]) {
       states += ParserState(sname, stmts.toSeq, line)
     }
     eat("}")
-    ParserDecl(name, params.toSeq, states.toSeq, ln)
+    ParserDecl(name, params.toSeq, states.toSeq, ln, directiveAt(ln))
   }
 
   /** parser 状态内语句：extract / transition / select / 普通赋值。 */
@@ -206,6 +219,7 @@ class Parser(toks0: Seq[Tok]) {
   // ---------------- control ----------------
 
   private def parseControl(): ControlDecl = {
+    val declLine = line
     eat("control")
     val name = eatIdent()
     // 可选类型参数 <...>：跳过
@@ -236,11 +250,15 @@ class Parser(toks0: Seq[Tok]) {
       if (isIdent("action")) actions += parseAction()
       else if (isIdent("table")) tables += parseTable()
       else if (isIdent("Register") || isIdent("Counter")) externs += parseExternInst()
-      else if (isIdent("apply")) { eat("apply"); eat("{"); applyBody = parseStmtsUntil("}") }
+      else if (isIdent("apply")) {
+        eat("apply"); eat("{"); applyBody = parseStmtsUntil("}")
+        eat("}") // 消费 apply 块自己的 '}'（修复：此前遗留给了 control 的 eat("}")，
+                 // 导致 control 真正的收尾 '}' 被 skipDecl 连同后续声明一并吞掉）
+      }
       else skipStmt() // 未知语句（注解、default_action 残留等）
     }
     eat("}")
-    ControlDecl(name, params.toSeq, actions.toSeq, tables.toSeq, externs.toSeq, applyBody, line)
+    ControlDecl(name, params.toSeq, actions.toSeq, tables.toSeq, externs.toSeq, applyBody, line, directiveAt(declLine))
   }
 
   /** `Register(bit<16>, 8) name;` / `Counter(bit<32>, 8) name;` */
@@ -300,13 +318,20 @@ class Parser(toks0: Seq[Tok]) {
     eat("{")
     val body = parseStmtsUntil("}")
     eat("}")
-    ActionDecl(name, params.toSeq, body, ln)
+    ActionDecl(name, params.toSeq, body, ln, directiveAt(ln))
   }
 
   private def parseTable(): TableDecl = {
     val ln = line
     eat("table")
     val name = eatIdent()
+    // 运行时表指示（// p4c: table <表名> runtime [size=N]）：紧邻性匹配 + 表名冗余校验
+    val rt = Directive.tableFor(scan, ln, claimed)
+    rt.foreach { d =>
+      if (d.name != name)
+        throw new P4Error(
+          s"行 $ln：'// p4c: table ${d.name} runtime' 指示的表名与声明 '$name' 不一致")
+    }
     eat("{")
     val keys = scala.collection.mutable.ArrayBuffer.empty[KeyElem]
     val actions = scala.collection.mutable.ArrayBuffer.empty[String]
@@ -333,7 +358,8 @@ class Parser(toks0: Seq[Tok]) {
       } else skipStmt()
     }
     eat("}")
-    TableDecl(name, keys.toSeq, actions.toSeq, entries.toSeq, ln)
+    TableDecl(name, keys.toSeq, actions.toSeq, entries.toSeq, ln,
+      isRuntime = rt.isDefined, runtimeSize = rt.map(_.size).getOrElse(0))
   }
 
   private def parseTableEntry(): TableEntry = {
@@ -553,8 +579,29 @@ class Parser(toks0: Seq[Tok]) {
 }
 
 object Parser {
-  def parseProgram(src: String): P4Program = {
-    val toks = Lexer.tokenize(Preprocess(src))
-    new Parser(toks).parseProgram()
+  /** 解析 + 编译指示诊断：返回（程序, 告警列表）。告警两类：
+    * ① 位于块注释内的指示样文本（注释掉的指示，不生效——宽容策略：不报错，
+    * 不阻断编译）；② 未紧邻任何 control/parser/action 声明而被忽略的指示。 */
+  def parseProgramWithDiagnostics(src: String): (P4Program, Seq[String]) = {
+    val scan = Directive.scan(src)
+    val p = new Parser(Lexer.tokenize(Preprocess(src)), scan)
+    val prog = p.parseProgram()
+    val suppressed = scan.suppressedInBlock.map { case (l, txt) =>
+      s"[P4C] 警告：行 $l 的 '// p4c:' 指示样文本位于块注释内（'$txt'），已忽略"
+    }
+    val orphanStages = scan.directives.toList.sortBy(_._1).collect {
+      case (l, n) if !p.claimed.contains(l) =>
+        s"[P4C] 警告：行 $l 的 '// p4c: stages=$n' 指示未紧邻 control/parser/action 声明" +
+          "（中间隔了代码/注释行），已忽略"
+    }
+    val orphanTables = scan.tableDirectives.toList.sortBy(_._1).collect {
+      case (l, d) if !p.claimed.contains(l) =>
+        s"[P4C] 警告：行 $l 的 '// p4c: table ${d.name} runtime' 指示未紧邻 table 声明" +
+          "（中间隔了代码/注释行），已忽略"
+    }
+    (prog, suppressed ++ orphanStages ++ orphanTables)
   }
+
+  /** 便捷入口：忽略告警（历史签名，行为不变）。 */
+  def parseProgram(src: String): P4Program = parseProgramWithDiagnostics(src)._1
 }

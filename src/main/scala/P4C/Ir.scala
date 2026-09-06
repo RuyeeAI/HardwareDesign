@@ -57,8 +57,38 @@ object Ir {
   /** 计数器累加（fire 时生效，delta 通常为 1） */
   final case class CounterAdd(inst: String, index: NodeId, delta: NodeId, width: Int, size: Int) extends Sink
 
-  /** 一次 ActionDAG 构建结果（一个 action / 一个表项 / 一段 apply 直行代码） */
-  final case class Dag(nodes: Vector[Node], outputs: Seq[Sink])
+  /** 一次 ActionDAG 构建结果（一个 action / 一个表项 / 一段 apply 直行代码）。
+    *
+    * @param stages 切拍调度标注：NodeId → 所在级（0 基）。空 map = 未调度（全组合单拍）。
+    *               只能由 [[Scheduler]]（在 [[Passes.runAll]] 之后）产出——优化 pass 会
+    *               重编号 NodeId，且 CSE 不得在调度后运行（会跨级合并）。
+    */
+  final case class Dag(nodes: Vector[Node], outputs: Seq[Sink], stages: Map[NodeId, Int] = Map.empty) {
+    /** stages 为空 = 未调度（全组合单拍） */
+    def isScheduled: Boolean = stages.nonEmpty
+    /** 实际级数：未调度 = 1；已调度 = max(stage) + 1（所有 Sink 固定末级，为发射约定，不入 map） */
+    def stageCount: Int = if (stages.isEmpty) 1 else stages.values.max + 1
+  }
+
+  /** 节点操作数（按声明序；叶子节点返回空）。 */
+  def operands(n: Node): Seq[NodeId] = n match {
+    case z: Zext => Seq(z.src)
+    case t: Trunc => Seq(t.src)
+    case nt: Not => Seq(nt.src)
+    case s: Slice => Seq(s.src)
+    case c: Cat => c.parts
+    case m: Mux => Seq(m.c, m.t, m.f)
+    case b: Bin => Seq(b.l, b.r)
+    case rr: RegRead => Seq(rr.index)
+    case _: Const | _: InputRef => Seq.empty
+  }
+
+  /** Sink 引用的节点遍历（OutputWrite 只有 value；Reg/Counter 写含 index 与 value/delta）。 */
+  def visitSink(s: Sink, v: NodeId => Unit): Unit = s match {
+    case o: OutputWrite => v(o.value)
+    case r: RegWrite => v(r.index); v(r.value)
+    case c: CounterAdd => v(c.index); v(c.delta)
+  }
 
   /** 便捷 DAG 构建器 */
   final class Builder {

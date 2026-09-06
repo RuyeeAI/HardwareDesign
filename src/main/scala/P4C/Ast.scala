@@ -56,13 +56,29 @@ object Ast {
 
   final case class Param(name: String, width: Int, line: Int)
 
-  final case class ActionDecl(name: String, params: Seq[Param], body: Seq[Stmt], line: Int)
+  /** E2：`stagesOpt` = 声明级切拍预算覆盖（来自 `// p4c: stages=N` 编译指示，
+    * 紧邻声明行之上；None = 无指示，走全局预算）。
+    *   - ActionDecl：作用于该 action 的 DAG；
+    *   - ControlDecl：作用于该 control 整体（所有 action/直行/表项 DAG）；
+    *   - ParserDecl：当前 parser 不切拍，仅记录不生效（见 ChiselBackend.emitParser）。 */
+  final case class ActionDecl(name: String, params: Seq[Param], body: Seq[Stmt], line: Int, stagesOpt: Option[Int] = None)
 
   final case class KeyElem(expr: Expr, matchKind: String, line: Int) // matchKind: exact
 
   final case class TableEntry(keys: Seq[Expr], isDefault: Boolean, action: String, args: Seq[Expr], line: Int)
 
-  final case class TableDecl(name: String, keys: Seq[KeyElem], actions: Seq[String], entries: Seq[TableEntry], line: Int)
+  /** `isRuntime` / `runtimeSize`：来自 `// p4c: table <表名> runtime [size=N]` 指示
+    * （缺省：静态融合表，size=0）。运行时表编译期只固化结构（表深 / key 宽 /
+    * action 编号与参数宽），条目内容运行时可写。 */
+  final case class TableDecl(
+    name: String,
+    keys: Seq[KeyElem],
+    actions: Seq[String],
+    entries: Seq[TableEntry],
+    line: Int,
+    isRuntime: Boolean = false,
+    runtimeSize: Int = 0,
+  )
 
   final case class ControlParam(name: String, direction: String, typeName: String, line: Int) // direction: inout|in|out
 
@@ -77,11 +93,12 @@ object Ast {
     externs: Seq[ExternInst],
     applyBody: Seq[Stmt],
     line: Int,
+    stagesOpt: Option[Int] = None,
   )
 
   final case class ParserState(name: String, stmts: Seq[Stmt], line: Int)
 
-  final case class ParserDecl(name: String, params: Seq[ControlParam], states: Seq[ParserState], line: Int)
+  final case class ParserDecl(name: String, params: Seq[ControlParam], states: Seq[ParserState], line: Int, stagesOpt: Option[Int] = None)
 
   final case class P4Program(
     headerTypes: Seq[HeaderType],
