@@ -190,4 +190,105 @@ class IrPassSpec extends AnyFreeSpec with Matchers {
     opt.nodes.count(_.isInstanceOf[Bin]) shouldBe 0
     opt.nodes.size should be < dag.nodes.size
   }
+
+  // ---------------- X5：语义简化 pass（simplify） ----------------
+
+  "slice-of-concat：对齐切片直接命中 part" in {
+    val b = new Builder
+    val a = b.add(InputRef(Seq("x", "a"), 8))
+    val c = b.add(InputRef(Seq("x", "c"), 8))
+    val cat = b.add(Cat(Seq(a, c), 16)) // a [15:8]、c [7:0]
+    val sl = b.add(Slice(cat, 15, 8))
+    val opt = Passes.runAll(b.finish(Seq(OutputWrite(Seq("f"), sl, 8))))
+    opt.nodes(opt.outputs.head.asInstanceOf[OutputWrite].value) shouldBe InputRef(Seq("x", "a"), 8)
+  }
+
+  "slice-of-concat：跨 part 切片重建为子 Slice 的 Cat" in {
+    val b = new Builder
+    val a = b.add(InputRef(Seq("x", "a"), 8))
+    val c = b.add(InputRef(Seq("x", "c"), 8))
+    val cat = b.add(Cat(Seq(a, c), 16))
+    val sl = b.add(Slice(cat, 11, 4)) // a 高 4 位 ++ c 高 4 位
+    val opt = Passes.runAll(b.finish(Seq(OutputWrite(Seq("f"), sl, 8))))
+    val Cat(parts, 8) = opt.nodes(opt.outputs.head.asInstanceOf[OutputWrite].value)
+    val Seq(na, nc) = parts.map(id => opt.nodes(id))
+    na match {
+      case Ir.Slice(ai, 3, 0) => opt.nodes(ai) shouldBe InputRef(Seq("x", "a"), 8) // a[15:8] ∩ [11:4] = a[3:0]
+      case other => fail(s"期望 Slice，got $other")
+    }
+    nc match {
+      case Ir.Slice(ci, 7, 4) => opt.nodes(ci) shouldBe InputRef(Seq("x", "c"), 8) // c[7:0] ∩ [11:4] = c[7:4]
+      case other => fail(s"期望 Slice，got $other")
+    }
+  }
+
+  "布尔恒等：And(x, 全1)=x、Or(x, 全1)=全1、Xor(x, 全1)=Not(x)" in {
+    val b = new Builder
+    val x = (b.add(InputRef(Seq("m", "x"), 8)), 8)
+    val ones = (b.add(Const(0xff, 8)), 8)
+    val andN = b.bin(And, x, ones)
+    val orN = b.bin(Or, x, ones)
+    val xorN = b.bin(Xor, x, ones)
+    val opt = Passes.runAll(b.finish(Seq(
+      OutputWrite(Seq("f0"), andN._1, 8),
+      OutputWrite(Seq("f1"), orN._1, 8),
+      OutputWrite(Seq("f2"), xorN._1, 8))))
+    opt.nodes(opt.outputs(0).asInstanceOf[OutputWrite].value) shouldBe InputRef(Seq("m", "x"), 8)
+    opt.nodes(opt.outputs(1).asInstanceOf[OutputWrite].value) shouldBe Const(0xff, 8)
+    opt.nodes(opt.outputs(2).asInstanceOf[OutputWrite].value) match {
+      case Not(s, 8) => opt.nodes(s) shouldBe InputRef(Seq("m", "x"), 8)
+      case other => fail(s"期望 Not，got $other")
+    }
+  }
+
+  "Not(Not(x)) = x" in {
+    val b = new Builder
+    val x = b.add(InputRef(Seq("m", "x"), 8))
+    val n1 = b.add(Not(x, 8))
+    val n2 = b.add(Not(n1, 8))
+    val opt = Passes.runAll(b.finish(Seq(OutputWrite(Seq("f"), n2, 8))))
+    opt.nodes(opt.outputs.head.asInstanceOf[OutputWrite].value) shouldBe InputRef(Seq("m", "x"), 8)
+  }
+
+  "自反消除：Sub(x,x)=0、Xor(x,x)=0、And(x,x)=x" in {
+    val b = new Builder
+    val x = (b.add(InputRef(Seq("m", "x"), 8)), 8)
+    val sub = b.bin(Sub, x, x)
+    val xor = b.bin(Xor, x, x)
+    val and = b.bin(And, x, x)
+    val opt = Passes.runAll(b.finish(Seq(
+      OutputWrite(Seq("f0"), sub._1, 8),
+      OutputWrite(Seq("f1"), xor._1, 8),
+      OutputWrite(Seq("f2"), and._1, 8))))
+    opt.nodes(opt.outputs(0).asInstanceOf[OutputWrite].value) shouldBe Const(0, 8)
+    opt.nodes(opt.outputs(1).asInstanceOf[OutputWrite].value) shouldBe Const(0, 8)
+    opt.nodes(opt.outputs(2).asInstanceOf[OutputWrite].value) shouldBe InputRef(Seq("m", "x"), 8)
+  }
+
+  "simplify 属性检查：优化前后 DAG 对随机输入求值一致（Interp 交叉验证）" in {
+    val rng = new scala.util.Random(42)
+    val b = new Builder
+    val x = (b.add(InputRef(Seq("m", "x"), 16)), 16)
+    val y = (b.add(InputRef(Seq("m", "y"), 16)), 16)
+    val cat = b.add(Cat(Seq(x._1, y._1), 32))
+    val sl = b.add(Slice(cat, 23, 8))
+    val add = b.bin(Add, x, y)
+    val xor = b.bin(Xor, (sl, 16), (b.add(Const(0xffff, 16)), 16))
+    val sub = b.bin(Sub, add, add)
+    val dag = b.finish(Seq(
+      OutputWrite(Seq("f0"), sl, 16),
+      OutputWrite(Seq("f1"), xor._1, 16),
+      OutputWrite(Seq("f2"), sub._1, 16)))
+    val opt = Passes.runAll(dag)
+    for (_ <- 0 until 50) {
+      val env = Interp.Env(inputs = Map(
+        Seq("m", "x") -> BigInt(16, rng),
+        Seq("m", "y") -> BigInt(16, rng)))
+      val r0 = Interp.eval(dag, env)
+      val r1 = Interp.eval(opt, env)
+      r0.outputs shouldBe r1.outputs
+    }
+    // 结构效果：x+x 自反、全 1 异或、cat 切片各至少削减一层
+    opt.nodes.size should be < dag.nodes.size
+  }
 }

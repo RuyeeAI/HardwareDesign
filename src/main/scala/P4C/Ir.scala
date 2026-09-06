@@ -302,6 +302,89 @@ object Passes {
     b.finish(outs)
   }
 
+  /** X5 语义简化 pass（borrow XLS 优化 pass 思路），全部为等价变换：
+    *   ① slice-of-concat 直切：Slice(Cat(...)) 直接切到 parts（消除 Cat+Slice 两层）；
+    *   ② 布尔恒等：And(x,全1)=x、Or(x,全1)=全1、Xor(x,全1)=Not(x)、Not(Not(x))=x、
+    *      零位移 Shl/Shr(x,0)=x（补 constFold 只覆盖 0 侧的对称情形）；
+    *   ③ 自反消除：Sub(x,x)=0、Xor(x,x)=0、And/Or(x,x)=x。
+    * 语义零回归由交叉引擎 fuzzer（CrossEngineFuzzSpec）与 staged 等价测试兜底。
+    */
+  def simplify(dag: Dag): Dag = {
+    val b = new Builder
+    val map = scala.collection.mutable.HashMap.empty[NodeId, NodeId]
+
+    def isOnes(n: Node): Boolean = n match {
+      case Const(v, w) => v == (BigInt(1) << w) - 1
+      case _ => false
+    }
+    def isZeroN(n: Node): Boolean = n match { case Const(v, _) => v == 0; case _ => false }
+
+    /** Slice(Cat(parts)) → 直接切 parts：全盖 part 保留原 part，部分盖生成
+      * 子 Slice，跨多 part 重建 Cat（保持 part 顺序，先声明在高位）。 */
+    def sliceOfCat(cat: Cat, hi: Int, lo: Int): NodeId = {
+      val widths = cat.parts.map(p => b(p).width)
+      val total = widths.sum
+      val bounds = scala.collection.mutable.ArrayBuffer.empty[(Int, Int)] // (hi, lo) per part
+      var top = total - 1
+      widths.foreach { w => bounds += ((top, top - w + 1)); top -= w }
+      val newParts = bounds.zip(cat.parts).collect {
+        case ((phi, plo), pid) if phi >= lo && plo <= hi =>
+          val oh = math.min(phi, hi)
+          val ol = math.max(plo, lo)
+          if (oh == phi && ol == plo) pid
+          else b.add(Ir.Slice(pid, oh - plo, ol - plo))
+      }.toVector
+      newParts match {
+        case Seq(single) => single
+        case multi => b.add(Cat(multi, hi - lo + 1))
+      }
+    }
+
+    def go(id: NodeId): NodeId = map.getOrElseUpdate(id, dag.nodes(id) match {
+      case _: Const | _: InputRef => b.add(dag.nodes(id))
+      case z: Zext => b.add(Zext(go(z.src), z.width))
+      case t: Trunc => b.add(Trunc(go(t.src), t.width))
+      case n: Not =>
+        val s = go(n.src)
+        b(s) match {
+          case Not(inner, _) => inner // Not(Not(x)) → x
+          case _ => b.add(Not(s, n.width))
+        }
+      case sl: Ir.Slice =>
+        val srcId = go(sl.src)
+        b(srcId) match {
+          case cat: Cat if cat.parts.nonEmpty => sliceOfCat(cat, sl.hi, sl.lo)
+          case _ => b.add(Ir.Slice(srcId, sl.hi, sl.lo))
+        }
+      case cat: Cat => b.add(Cat(cat.parts.map(go), cat.width))
+      case m: Mux => b.add(Mux(go(m.c), go(m.t), go(m.f), m.width))
+      case rr: RegRead => b.add(RegRead(rr.inst, go(rr.index), rr.width, rr.size))
+      case bin: Bin =>
+        val lid = go(bin.l)
+        val rid = go(bin.r)
+        val w = bin.width
+        val lv = b(lid)
+        val rv = b(rid)
+        bin.op match {
+          case Ir.And if lid == rid => lid
+          case Ir.Or if lid == rid => lid
+          case Ir.Xor if lid == rid => b.add(Const(0, w))
+          case Ir.Sub if lid == rid => b.add(Const(0, w))
+          case Ir.And if isOnes(lv) => rid
+          case Ir.And if isOnes(rv) => lid
+          case Ir.Or if isOnes(lv) || isOnes(rv) => b.add(Const((BigInt(1) << w) - 1, w))
+          case Ir.Xor if isOnes(lv) => b.add(Not(rid, w))
+          case Ir.Xor if isOnes(rv) => b.add(Not(lid, w))
+          case Ir.Shl if isZeroN(rv) => lid
+          case Ir.Shr if isZeroN(rv) => lid
+          case _ => b.add(Bin(bin.op, lid, rid, w))
+        }
+    })
+
+    val outs = dag.outputs.map(s => mapSink(s, go))
+    b.finish(outs)
+  }
+
   /** 标准优化链。 */
-  def runAll(dag: Dag): Dag = dce(cse(constFold(dag)))
+  def runAll(dag: Dag): Dag = dce(cse(simplify(constFold(dag))))
 }
