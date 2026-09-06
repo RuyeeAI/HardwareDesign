@@ -1,0 +1,34 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', padding: '20px 70px 0', flexDirection: 'column' }}>
+  <Box style={{ height: 90, justifyContent: 'flex-end' }}>
+    <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1F2429' }}>验证门禁：零回归是机器判定，不是口号</Text>
+    <Box style={{ width: 56, height: 3, background: '#185FA5', marginTop: 12 }} />
+  </Box>
+  <Box style={{ height: 520, marginTop: 10, flexDirection: 'row' }}>
+    <Box style={{ width: 560, justifyContent: 'center' }}>
+      <Text style={{ fontSize: 96, fontWeight: 'bold', color: '#185FA5', lineHeight: 1 }}>357/357</Text>
+      <Text style={{ fontSize: 18, color: '#1F2429', marginTop: 16 }}>全仓回归 · 58 个测试套件 · 5m57s</Text>
+      <Text style={{ fontSize: 15, color: '#6B7280', marginTop: 24, lineHeight: 1.7 }}>307 条既有基线 + 切拍与运行时表项新增用例，<br />数量严格吻合、一条未坏。</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', justifyContent: 'center', gap: 26, paddingLeft: 40 }}>
+      <Box style={{ border: '1px solid #D9D9D2', background: '#FFFFFF', padding: '20px 24px' }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1F2429' }}>76 / 76 · 编译器套件</Text>
+        <Text style={{ fontSize: 14, color: '#6B7280', lineHeight: 1.6, marginTop: 6 }}>前端/IR/调度单元 + demo1~7 端到端，含 valid 脉宽与等价性断言。</Text>
+      </Box>
+      <Box style={{ border: '1px solid #D9D9D2', background: '#FFFFFF', padding: '20px 24px' }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1F2429' }}>diff 为空 · N=1 逐字节门禁</Text>
+        <Text style={{ fontSize: 14, color: '#6B7280', lineHeight: 1.6, marginTop: 6 }}>未启用切拍/运行时表时，生成代码与改动前基线逐字节一致——默认用户零风险。</Text>
+      </Box>
+      <Box style={{ border: '1px solid #D9D9D2', background: '#FFFFFF', padding: '20px 24px' }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1F2429' }}>7 个 demo · 功能等价验证</Text>
+        <Text style={{ fontSize: 14, color: '#6B7280', lineHeight: 1.6, marginTop: 6 }}>切拍版与单拍版激励等价（容忍 N-1 拍延迟），多轮脉冲间隔 ≥N 混合覆盖。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ height: 30, marginTop: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <Box style={{ width: 10, height: 10, background: '#185FA5' }} />
+      <Text style={{ fontSize: 11, color: '#6B7280' }}>P4C</Text>
+    </Box>
+    <Text style={{ fontSize: 12, color: '#6B7280' }}>12 / 14</Text>
+  </Box>
+</Slide>

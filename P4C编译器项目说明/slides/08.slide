@@ -1,0 +1,46 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', padding: '20px 70px 0', flexDirection: 'column' }}>
+  <Box style={{ height: 90, justifyContent: 'flex-end' }}>
+    <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1F2429' }}>核心 IR：ActionDAG</Text>
+    <Box style={{ width: 56, height: 3, background: '#185FA5', marginTop: 12 }} />
+  </Box>
+  <Box style={{ height: 520, marginTop: 20, flexDirection: 'row', gap: 50 }}>
+    <Box style={{ width: 640, flexDirection: 'column', gap: 20, paddingTop: 6 }}>
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>节点式位向量数据流图</Text>
+      <Text style={{ fontSize: 16, color: '#1F2429', lineHeight: 1.7 }}>Const / Bin / Slice / Cat / Mux / RegRead 等节点各带推断位宽；宽度不匹配<strong>显式插入 Zext/Trunc 并报错拒绝静默截断</strong>——这条红线来自 ParserCore 的历史教训。</Text>
+      <Box style={{ height: 1, background: '#D9D9D2' }} />
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>Sink 承载副作用</Text>
+      <Text style={{ fontSize: 16, color: '#1F2429', lineHeight: 1.7 }}>OutputWrite / RegWrite / CounterAdd 三类 Sink 统一表达「写字段、写状态寄存器、加计数器」；切拍调度把所有 Sink 固定在末级，读写冲突在结构上不可能发生。</Text>
+      <Box style={{ height: 1, background: '#D9D9D2' }} />
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>Pass 链与顺序约束</Text>
+      <Text style={{ fontSize: 16, color: '#6B7280', lineHeight: 1.7 }}>常量折叠 → CSE → DCE 在调度前完成；调度标注（stages）附着在 Dag 上而非节点内，三个优化 pass 零改动平滑共存。</Text>
+    </Box>
+    <Box style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      <svg width={430} height={400} viewBox='0 0 430 400'>
+        <rect x='20' y='30' width='120' height='44' fill='#FFFFFF' stroke='#1F2429' strokeWidth='2' />
+        <text x='80' y='58' fontFamily='JetBrains Mono' fontSize='13' fill='#1F2429' text-anchor='middle'>InputRef</text>
+        <rect x='170' y='30' width='100' height='44' fill='#FFFFFF' stroke='#1F2429' strokeWidth='2' />
+        <text x='220' y='58' fontFamily='JetBrains Mono' fontSize='13' fill='#1F2429' text-anchor='middle'>Const</text>
+        <rect x='300' y='30' width='110' height='44' fill='#FFFFFF' stroke='#1F2429' strokeWidth='2' />
+        <text x='355' y='58' fontFamily='JetBrains Mono' fontSize='13' fill='#1F2429' text-anchor='middle'>RegRead</text>
+        <line x1='80' y1='74' x2='190' y2='150' stroke='#1F2429' strokeWidth='2' />
+        <line x1='220' y1='74' x2='210' y2='150' stroke='#1F2429' strokeWidth='2' />
+        <line x1='355' y1='74' x2='230' y2='150' stroke='#185FA5' strokeWidth='2' />
+        <rect x='130' y='150' width='170' height='48' fill='#185FA5' />
+        <text x='215' y='180' fontFamily='JetBrains Mono' fontSize='14' fill='#FFFFFF' text-anchor='middle'>Bin / Mux / Slice</text>
+        <line x1='215' y1='198' x2='215' y2='240' stroke='#1F2429' strokeWidth='2' />
+        <rect x='110' y='240' width='210' height='44' fill='none' stroke='#1F2429' strokeWidth='2' />
+        <text x='215' y='268' fontFamily='JetBrains Mono' fontSize='13' fill='#1F2429' text-anchor='middle'>OPT: fold·CSE·DCE</text>
+        <line x1='215' y1='284' x2='215' y2='320' stroke='#185FA5' strokeWidth='2' />
+        <rect x='110' y='320' width='210' height='44' fill='none' stroke='#185FA5' strokeWidth='2' />
+        <text x='215' y='348' fontFamily='JetBrains Mono' fontSize='13' fill='#185FA5' text-anchor='middle'>SINK (末级固定)</text>
+      </svg>
+    </Box>
+  </Box>
+  <Box style={{ height: 30, marginTop: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <Box style={{ width: 10, height: 10, background: '#185FA5' }} />
+      <Text style={{ fontSize: 11, color: '#6B7280' }}>P4C</Text>
+    </Box>
+    <Text style={{ fontSize: 12, color: '#6B7280' }}>08 / 14</Text>
+  </Box>
+</Slide>

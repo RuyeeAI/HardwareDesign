@@ -1,0 +1,38 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', padding: '20px 70px 0', flexDirection: 'column' }}>
+  <Box style={{ height: 90, justifyContent: 'flex-end' }}>
+    <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1F2429' }}>定位与方法论</Text>
+    <Box style={{ width: 56, height: 3, background: '#185FA5', marginTop: 12 }} />
+  </Box>
+  <Box style={{ height: 520, marginTop: 20, flexDirection: 'row', gap: 50 }}>
+    <Box style={{ width: 640, flexDirection: 'column', gap: 22, paddingTop: 6 }}>
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>目标：交换机数据平面的「源码级固化」</Text>
+      <Text style={{ fontSize: 16, color: '#1F2429', lineHeight: 1.7 }}>把 P4 描述的报文解析与 Match-Action 逻辑编译成<strong>可读、可裁剪、可与手写模块混用</strong>的参数化 Chisel 源码，而非直接吐低级中间表示——最终经 FIRRTL 工具链落地 Verilog。</Text>
+      <Box style={{ height: 1, background: '#D9D9D2' }} />
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>范围决策：只支持标准 P4-16 + v1model</Text>
+      <Text style={{ fontSize: 16, color: '#1F2429', lineHeight: 1.7 }}>不做 TNA/PSA 等厂商架构。子集先行、按里程碑收敛，是三天走完 M1~M5 的前提——<strong>范围收敛换迭代速度</strong>，通用性留到能力验证之后。</Text>
+      <Box style={{ height: 1, background: '#D9D9D2' }} />
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>方法论：照搬 Google XLS 的骨架</Text>
+      <Text style={{ fontSize: 16, color: '#6B7280', lineHeight: 1.7 }}>DSL → 核心数据流 IR → 优化 + 调度 → 后端。IR 承载全部优化，后端只做翻译；调度（插拍）是本项目 9 月新增的环节，由此获得时序收敛能力。</Text>
+    </Box>
+    <Box style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      <svg width={400} height={330} viewBox='0 0 400 330'>
+        <rect x='20' y='20' width='360' height='2' fill='#D9D9D2' />
+        <text x='20' y='50' fontFamily='JetBrains Mono' fontSize='13' fill='#6B7280'>GOOGLE XLS</text>
+        <text x='20' y='90' fontFamily='JetBrains Mono' fontSize='14' fill='#1F2429'>DSLX → IR → OPT → SCHED → Verilog</text>
+        <rect x='20' y='150' width='360' height='2' fill='#185FA5' />
+        <text x='20' y='180' fontFamily='JetBrains Mono' fontSize='13' fill='#185FA5'>P4C (本项目)</text>
+        <text x='20' y='220' fontFamily='JetBrains Mono' fontSize='14' fill='#1F2429'>P4-16 → ActionDAG → OPT</text>
+        <text x='20' y='246' fontFamily='JetBrains Mono' fontSize='14' fill='#1F2429'>→ SCHED → Chisel</text>
+        <text x='20' y='290' fontSize='13' fill='#6B7280'>后端产出 Scala 源码而非网表，</text>
+        <text x='20' y='312' fontSize='13' fill='#6B7280'>保留人读与手改的空间。</text>
+      </svg>
+    </Box>
+  </Box>
+  <Box style={{ height: 30, marginTop: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <Box style={{ width: 10, height: 10, background: '#185FA5' }} />
+      <Text style={{ fontSize: 11, color: '#6B7280' }}>P4C</Text>
+    </Box>
+    <Text style={{ fontSize: 12, color: '#6B7280' }}>04 / 14</Text>
+  </Box>
+</Slide>

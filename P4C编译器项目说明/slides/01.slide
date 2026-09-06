@@ -1,0 +1,28 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', position: 'relative' }}>
+  <Box style={{ position: 'absolute', top: 64, left: 70, width: 56, height: 3, background: '#185FA5' }} />
+  <Box style={{ position: 'absolute', top: 92, left: 70, width: 640 }}>
+    <Text style={{ fontSize: 14, color: '#6B7280', letterSpacing: 3 }}>HARDWARE DESIGN · 技术评审 · 2026-09</Text>
+    <Text style={{ fontSize: 72, fontWeight: 'bold', color: '#1F2429', lineHeight: 1.15, marginTop: 26 }}>P4 → Chisel<br />编译器</Text>
+    <Text style={{ fontSize: 18, color: '#6B7280', marginTop: 30, lineHeight: 1.7 }}>把 P4 报文处理编译为固化的 Chisel RTL<br />方法论参考 Google XLS：DSL → IR → 调度 → 后端</Text>
+  </Box>
+  <Box style={{ position: 'absolute', right: 70, bottom: 66 }}>
+    <svg width={400} height={280} viewBox='0 0 400 280'>
+      <line x1='30' y1='30' x2='30' y2='250' stroke='#1F2429' strokeWidth='2' />
+      <rect x='18' y='22' width='24' height='16' fill='#185FA5' />
+      <rect x='18' y='82' width='24' height='16' fill='none' stroke='#1F2429' strokeWidth='2' />
+      <rect x='18' y='142' width='24' height='16' fill='none' stroke='#1F2429' strokeWidth='2' />
+      <rect x='18' y='202' width='24' height='16' fill='none' stroke='#1F2429' strokeWidth='2' />
+      <text x='58' y='36' fontFamily='JetBrains Mono' fontSize='16' fill='#1F2429'>FRONTEND</text>
+      <text x='58' y='96' fontFamily='JetBrains Mono' fontSize='16' fill='#1F2429'>IR / PASSES</text>
+      <text x='58' y='156' fontFamily='JetBrains Mono' fontSize='16' fill='#185FA5'>SCHEDULE</text>
+      <text x='58' y='216' fontFamily='JetBrains Mono' fontSize='16' fill='#1F2429'>CHISEL CODEGEN</text>
+      <line x1='300' y1='150' x2='380' y2='150' stroke='#D9D9D2' strokeWidth='2' />
+      <line x1='380' y1='150' x2='380' y2='60' stroke='#D9D9D2' strokeWidth='2' />
+      <text x='300' y='180' fontFamily='JetBrains Mono' fontSize='12' fill='#6B7280'>VERILOG</text>
+    </svg>
+  </Box>
+  <Box style={{ position: 'absolute', left: 70, bottom: 60, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+    <Box style={{ width: 10, height: 10, background: '#185FA5' }} />
+    <Text style={{ fontSize: 11, color: '#6B7280' }}>P4C</Text>
+  </Box>
+</Slide>

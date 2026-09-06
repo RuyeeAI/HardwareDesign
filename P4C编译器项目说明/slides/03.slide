@@ -1,0 +1,9 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', position: 'relative' }}>
+  <Text style={{ position: 'absolute', top: 150, left: 70, fontSize: 150, fontWeight: 'bold', color: '#B5D4F4', lineHeight: 1 }}>01</Text>
+  <Box style={{ position: 'absolute', top: 380, left: 74 }}>
+    <Box style={{ width: 56, height: 3, background: '#185FA5' }} />
+    <Text style={{ fontSize: 44, fontWeight: 'bold', color: '#1F2429', marginTop: 24 }}>概览与架构</Text>
+    <Text style={{ fontSize: 16, color: '#6B7280', marginTop: 18, lineHeight: 1.6 }}>这个工具是什么、整体长什么样、走到哪一步了</Text>
+  </Box>
+  <Text style={{ position: 'absolute', top: 620, left: 70, fontSize: 12, color: '#6B7280' }}>OVERVIEW &amp; ARCHITECTURE</Text>
+</Slide>

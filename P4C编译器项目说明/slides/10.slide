@@ -1,0 +1,51 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', padding: '20px 70px 0', flexDirection: 'column' }}>
+  <Box style={{ height: 90, justifyContent: 'flex-end' }}>
+    <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1F2429' }}>运行时表项：表从编译期到运行时</Text>
+    <Box style={{ width: 56, height: 3, background: '#185FA5', marginTop: 12 }} />
+  </Box>
+  <Box style={{ height: 520, marginTop: 20, flexDirection: 'row', gap: 50 }}>
+    <Box style={{ width: 640, flexDirection: 'column', gap: 20, paddingTop: 6 }}>
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>指示开启，Vec 存储，写后下一条查找可见</Text>
+      <Text style={{ fontSize: 16, color: '#1F2429', lineHeight: 1.7 }}>表声明上方 <span style={{ fontFamily: 'JetBrains Mono', fontSize: 14 }}>// p4c: table X runtime size=4</span> 即生成可写表：Vec 寄存器组合读、独立写端口、越界写守卫。<strong>不做同拍旁路</strong>，写拍当拍见旧值、下一拍起新值——无撕裂。</Text>
+      <Box style={{ height: 1, background: '#D9D9D2' }} />
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>action 参数运行时化：IR 零改动</Text>
+      <Text style={{ fontSize: 16, color: '#1F2429', lineHeight: 1.7 }}>条目携带 actionId + 参数位串；命中后按 id 选通参数化 action 逻辑，参数从存储切片解出（形参合成 <span style={{ fontFamily: 'JetBrains Mono', fontSize: 14 }}>__rtarg</span> InputRef）。Scheduler 与 valid 链语义完全不受影响。</Text>
+      <Box style={{ height: 1, background: '#D9D9D2' }} />
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1F2429' }}>静态模式逐字节零回归</Text>
+      <Text style={{ fontSize: 16, color: '#6B7280', lineHeight: 1.7 }}>无指示的表仍走原静态融合路径；运行时表与静态表可在同一 control 共存。SRAM 映射、lpm/ternary key 留作后续。</Text>
+    </Box>
+    <Box style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      <svg width={420} height={340} viewBox='0 0 420 340'>
+        <text x='10' y='30' fontFamily='JetBrains Mono' fontSize='13' fill='#6B7280'>ENTRY LAYOUT (MSB → LSB)</text>
+        <rect x='10' y='50' width='70' height='56' fill='#185FA5' />
+        <text x='45' y='84' fontSize='14' fill='#FFFFFF' text-anchor='middle'>valid</text>
+        <rect x='80' y='50' width='90' height='56' fill='#FFFFFF' stroke='#1F2429' strokeWidth='2' />
+        <text x='125' y='84' fontSize='14' fill='#1F2429' text-anchor='middle'>actionId</text>
+        <rect x='170' y='50' width='130' height='56' fill='#FFFFFF' stroke='#1F2429' strokeWidth='2' />
+        <text x='235' y='84' fontSize='14' fill='#1F2429' text-anchor='middle'>参数位串</text>
+        <rect x='300' y='50' width='110' height='56' fill='#FFFFFF' stroke='#1F2429' strokeWidth='2' />
+        <text x='355' y='84' fontSize='14' fill='#1F2429' text-anchor='middle'>key</text>
+        <text x='10' y='150' fontSize='14' fill='#1F2429'>上电全 0 → 全 miss → default（编译期固定）</text>
+        <rect x='10' y='180' width='400' height='2' fill='#D9D9D2' />
+        <text x='10' y='215' fontFamily='JetBrains Mono' fontSize='13' fill='#6B7280'>WRITE PATH</text>
+        <rect x='10' y='230' width='90' height='40' fill='none' stroke='#1F2429' strokeWidth='2' />
+        <text x='55' y='255' fontFamily='JetBrains Mono' fontSize='13' fill='#1F2429' text-anchor='middle'>we</text>
+        <rect x='110' y='230' width='90' height='40' fill='none' stroke='#1F2429' strokeWidth='2' />
+        <text x='155' y='255' fontFamily='JetBrains Mono' fontSize='13' fill='#1F2429' text-anchor='middle'>waddr</text>
+        <rect x='210' y='230' width='110' height='40' fill='none' stroke='#1F2429' strokeWidth='2' />
+        <text x='265' y='255' fontFamily='JetBrains Mono' fontSize='13' fill='#1F2429' text-anchor='middle'>wdata</text>
+        <line x1='320' y1='250' x2='360' y2='250' stroke='#185FA5' strokeWidth='2' />
+        <rect x='360' y='230' width='50' height='40' fill='#185FA5' />
+        <text x='385' y='255' fontSize='13' fill='#FFFFFF' text-anchor='middle'>Vec</text>
+        <text x='10' y='310' fontSize='13' fill='#6B7280'>越界写守卫：waddr &lt; size；重复 key 低地址优先</text>
+      </svg>
+    </Box>
+  </Box>
+  <Box style={{ height: 30, marginTop: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <Box style={{ width: 10, height: 10, background: '#185FA5' }} />
+      <Text style={{ fontSize: 11, color: '#6B7280' }}>P4C</Text>
+    </Box>
+    <Text style={{ fontSize: 12, color: '#6B7280' }}>10 / 14</Text>
+  </Box>
+</Slide>

@@ -1,0 +1,9 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', position: 'relative' }}>
+  <Text style={{ position: 'absolute', top: 150, left: 70, fontSize: 150, fontWeight: 'bold', color: '#B5D4F4', lineHeight: 1 }}>03</Text>
+  <Box style={{ position: 'absolute', top: 380, left: 74 }}>
+    <Box style={{ width: 56, height: 3, background: '#185FA5' }} />
+    <Text style={{ fontSize: 44, fontWeight: 'bold', color: '#1F2429', marginTop: 24 }}>质量与展望</Text>
+    <Text style={{ fontSize: 16, color: '#6B7280', marginTop: 18, lineHeight: 1.6 }}>怎么证明它是对的、接下来去哪</Text>
+  </Box>
+  <Text style={{ position: 'absolute', top: 620, left: 70, fontSize: 12, color: '#6B7280' }}>QUALITY &amp; ROADMAP</Text>
+</Slide>

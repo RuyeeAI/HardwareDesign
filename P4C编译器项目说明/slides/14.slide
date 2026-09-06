@@ -1,0 +1,7 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', position: 'relative' }}>
+  <Box style={{ position: 'absolute', top: 250, left: 0, width: 1280, alignItems: 'center' }}>
+    <Box style={{ width: 56, height: 3, background: '#185FA5' }} />
+    <Text style={{ fontSize: 52, fontWeight: 'bold', color: '#1F2429', marginTop: 36, textAlign: 'center', lineHeight: 1.4 }}>IR 是核心资产<br />调度、优化与验证都发生在同一张图上</Text>
+    <Text style={{ fontSize: 16, color: '#6B7280', marginTop: 40, letterSpacing: 2 }}>HARDWARE DESIGN · P4C 编译器 · 2026-09 技术评审</Text>
+  </Box>
+</Slide>

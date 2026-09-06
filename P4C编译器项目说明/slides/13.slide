@@ -1,0 +1,39 @@
+<Slide style={{ width: 1280, height: 720, background: '#FAFAF7', padding: '20px 70px 0', flexDirection: 'column' }}>
+  <Box style={{ height: 90, justifyContent: 'flex-end' }}>
+    <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#1F2429' }}>工具链与路线</Text>
+    <Box style={{ width: 56, height: 3, background: '#185FA5', marginTop: 12 }} />
+  </Box>
+  <Box style={{ height: 520, marginTop: 20, flexDirection: 'row' }}>
+    <Box style={{ width: 330, flexDirection: 'column', gap: 24, paddingTop: 6, paddingRight: 40 }}>
+      <Box style={{ width: 56, height: 3, background: '#185FA5' }} />
+      <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1F2429', lineHeight: 1.4 }}>怎么用，以及下一步补什么</Text>
+      <Text style={{ fontSize: 15, color: '#6B7280', lineHeight: 1.7 }}>所有能力默认关闭：不加指示、不设参数，生成结果与纯静态版本完全一致。</Text>
+    </Box>
+    <Box style={{ flex: 1, flexDirection: 'column', gap: 18, paddingTop: 4 }}>
+      <Box style={{ border: '1px solid #D9D9D2', background: '#FFFFFF', padding: '18px 22px' }}>
+        <Text style={{ fontSize: 17, fontWeight: 'bold', color: '#185FA5' }}>用法</Text>
+        <Text style={{ fontSize: 14, color: '#1F2429', lineHeight: 1.7, marginTop: 8, fontFamily: 'JetBrains Mono' }}>sbt compile —— demo .p4 自动生成（p4Stages 可设全局拍数）<br />P4cMain in.p4 outDir --stages 4 —— CLI 单文件编译<br />// p4c: stages=N / table X runtime —— 声明级与表级指示<br />P4C_STAGED_STAGES —— staged 变体目录的拍数预算</Text>
+      </Box>
+      <Box style={{ border: '1px solid #D9D9D2', background: '#FFFFFF', padding: '18px 22px', flex: 1 }}>
+        <Text style={{ fontSize: 17, fontWeight: 'bold', color: '#185FA5' }}>路线（对照 XLS 的差距）</Text>
+        <Box style={{ flexDirection: 'row', gap: 30, marginTop: 10 }}>
+          <Box style={{ flex: 1, flexDirection: 'column', gap: 10 }}>
+            <Text style={{ fontSize: 14, color: '#1F2429', lineHeight: 1.6 }}><span style={{ fontWeight: 'bold' }}>寄存器最小化</span>：SDC/min-cut 策略，同拍数预算下插更少的拍寄存器</Text>
+            <Text style={{ fontSize: 14, color: '#1F2429', lineHeight: 1.6 }}><span style={{ fontWeight: 'bold' }}>延迟模型闭环</span>：综合反馈替代静态权重表（XLS 的 FDO 思路）</Text>
+          </Box>
+          <Box style={{ flex: 1, flexDirection: 'column', gap: 10 }}>
+            <Text style={{ fontSize: 14, color: '#1F2429', lineHeight: 1.6 }}><span style={{ fontWeight: 'bold' }}>表存储演进</span>：BaseCbb SRAM 映射（同步读 +1 拍并入 valid 链）、lpm/ternary key</Text>
+            <Text style={{ fontSize: 14, color: '#1F2429', lineHeight: 1.6 }}><span style={{ fontWeight: 'bold' }}>节点级约束</span>：强制指定节点进指定级（XLS NodeInCycleConstraint 形态）</Text>
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ height: 30, marginTop: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <Box style={{ width: 10, height: 10, background: '#185FA5' }} />
+      <Text style={{ fontSize: 11, color: '#6B7280' }}>P4C</Text>
+    </Box>
+    <Text style={{ fontSize: 12, color: '#6B7280' }}>13 / 14</Text>
+  </Box>
+</Slide>
