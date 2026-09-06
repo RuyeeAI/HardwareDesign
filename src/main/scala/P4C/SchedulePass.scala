@@ -98,6 +98,70 @@ object Scheduler {
     dag.copy(stages = stageMap)
   }
 
+  // ---------------- X2：时钟约束模式（对标 XLS 两阶段调度 / minimize_clock_on_failure） ----------------
+
+  /** 可达节点的加权深度表 arrival(x)（与 [[schedule]] 加权路径同口径）。 */
+  private def depths(dag: Ir.Dag): Map[Ir.NodeId, Int] = {
+    val reach = mutable.BitSet.empty
+    def visit(id: Ir.NodeId): Unit =
+      if (!reach(id)) {
+        reach(id) = true
+        Ir.operands(dag.nodes(id)).foreach(visit)
+      }
+    dag.outputs.foreach(Ir.visitSink(_, visit))
+    val depth = mutable.HashMap.empty[Ir.NodeId, Int]
+    (0 until dag.nodes.length).foreach { id =>
+      if (reach(id)) {
+        depth(id) = weight(dag.nodes(id)) + (Ir.operands(dag.nodes(id)) match {
+          case Seq() => 0
+          case ops => ops.map(depth).max
+        })
+      }
+    }
+    depth.toMap
+  }
+
+  /** clock 约束的结构下界：最大单节点权重（单节点不可再切分）。
+    * clockW < minClock 时不存在任何可行调度（XLS minimize_clock_on_failure 的等价报告）。 */
+  def minClock(dag: Ir.Dag): Int = {
+    val d = depths(dag)
+    d.keys.map(id => weight(dag.nodes(id))).foldLeft(0)(math.max)
+  }
+
+  /** 调度结果的各级组合延迟（加权口径）：delay(k) = max(arrival ∈ k) − start(k)，
+    * start(k) = min(arrival(x) − weight(x), x ∈ k)（本级行入点的最早到达）。
+    * 未调度 DAG 视为单级：delay = max(arrival)。 */
+  def stageDelays(dag: Ir.Dag): Seq[Int] = {
+    val d = depths(dag)
+    if (d.isEmpty) return Seq(0)
+    if (!dag.isScheduled) return Seq(d.values.max)
+    (0 until dag.stageCount).map { k =>
+      val inStage = d.collect { case (id, a) if dag.stages.getOrElse(id, 0) == k => (id, a) }
+      if (inStage.isEmpty) 0
+      else {
+        val start = inStage.map { case (id, a) => a - weight(dag.nodes(id)) }.min
+        inStage.values.max - start
+      }
+    }
+  }
+
+  /** clock 模式：给定每级组合延迟上限 clockW，求最小可行级数（线性扫描 1..W+1，
+    * 取首个每级延迟 ≤ clockW 的 n；扫描而非二分，规避分桶映射的非严格单调性假设）。
+    * clockW 低于 [[minClock]] 时抛 [[P4Error]] 并报告最小可行周期。 */
+  def minFeasibleStages(dag: Ir.Dag, clockW: Int, ctx: String = ""): Int = {
+    val where = if (ctx.isEmpty) "" else s"$ctx："
+    if (clockW < 1) throw new P4Error(s"${where}clock 约束必须 ≥ 1（got $clockW）")
+    val mc = minClock(dag)
+    if (clockW < mc)
+      throw new P4Error(s"${where}clock=$clockW 不可行：单节点最大权重 $mc 已超约束（最小可行 clock = $mc）")
+    val d = depths(dag)
+    if (d.isEmpty || d.values.max == 0) return 1 // 全布线 DAG / 空 DAG：无需切拍
+    val maxW = d.values.max
+    (1 to maxW + 1).find { n =>
+      stageDelays(schedule(dag, n, ctx)).forall(_ <= clockW)
+    }.getOrElse(maxW + 1)
+  }
+
   /** D3：RegRead 与同名 RegWrite/CounterAdd 跨级读-写次序校验。
     *
     * 语义约定：一次 DAG 调用内 RegRead 读旧值，所有写统一在末级提交（D3 不做写旁路）。

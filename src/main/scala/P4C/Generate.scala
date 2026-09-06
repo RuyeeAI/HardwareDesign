@@ -33,8 +33,11 @@ object Generate {
   }
 
   /** 单文件编译：返回生成的 .scala 路径（同时可选拷贝一份到发布目录）。
-    * @param stages 拍数预算（1 = 不切拍，默认模式与历史版本逐字节等价） */
-  def compileFile(p4Path: Path, outDir: Path, copyDir: Option[Path], stages: Int = 1): Result = {
+    * @param stages 拍数预算（1 = 不切拍，默认模式与历史版本逐字节等价）
+    * @param sigDir 签名/调度 JSON 输出目录（None = 不导出）
+    * @param clock 时钟约束（每级最大权重上限；X2 clock 模式，与 stages 互斥） */
+  def compileFile(p4Path: Path, outDir: Path, copyDir: Option[Path], stages: Int = 1,
+      sigDir: Option[Path] = None, clock: Option[Int] = None): Result = {
     checkStages(stages)
     val src = new String(Files.readAllBytes(p4Path), StandardCharsets.UTF_8)
     val (prog, warnings) = Parser.parseProgramWithDiagnostics(src)
@@ -43,7 +46,8 @@ object Generate {
     val prefix = pascalStem(p4Path.getFileName.toString)
     val modules =
       prog.controls.map(_.name) ++ prog.parsers.map(_ + "Parser")
-    val code = ChiselBackend.emitProgram(prog, prefix, p4Path.getFileName.toString, stages)
+    val sigBuf = if (sigDir.isDefined) Some(scala.collection.mutable.ArrayBuffer.empty[Signature.ControlSig]) else None
+    val code = ChiselBackend.emitProgram(prog, prefix, p4Path.getFileName.toString, stages, sigBuf, clock)
     directiveLogs(prog, p4Path.getFileName.toString).foreach(println)
 
     Files.createDirectories(outDir)
@@ -53,11 +57,18 @@ object Generate {
       Files.createDirectories(dir)
       Files.write(dir.resolve(out.getFileName.toString), code.getBytes(StandardCharsets.UTF_8))
     }
+    sigDir.foreach { dir =>
+      Files.createDirectories(dir)
+      Files.write(dir.resolve(s"$prefix.json"),
+        Signature.toJson(p4Path.getFileName.toString, sigBuf.fold(Seq.empty[Signature.ControlSig])(_.toSeq))
+          .getBytes(StandardCharsets.UTF_8))
+    }
     Result(p4Path, out, modules)
   }
 
   /** 批量编译（sbt sourceGenerators 入口）。每个生成文件自带带前缀的 Bundle。返回生成的托管源文件列表。 */
-  def generateAll(files: Seq[java.io.File], outDir: java.io.File, copyDir: Option[java.io.File], stages: Int = 1, log: String => Unit): Seq[java.io.File] = {
+  def generateAll(files: Seq[java.io.File], outDir: java.io.File, copyDir: Option[java.io.File], stages: Int = 1, log: String => Unit,
+      sigDir: Option[java.io.File] = None, clock: Option[Int] = None): Seq[java.io.File] = {
     checkStages(stages)
     val outs = scala.collection.mutable.ArrayBuffer.empty[java.io.File]
     Files.createDirectories(outDir.toPath)
@@ -68,11 +79,18 @@ object Generate {
         warnings.foreach(log)
         val prefix = pascalStem(f.getName)
         val out = outDir.toPath.resolve(s"$prefix.scala")
-        val (code, stageCounts) = ChiselBackend.emitModules(prog, prefix, f.getName, stages)
+        val sigBuf = if (sigDir.isDefined) Some(scala.collection.mutable.ArrayBuffer.empty[Signature.ControlSig]) else None
+        val (code, stageCounts) = ChiselBackend.emitModules(prog, prefix, f.getName, stages, sigBuf, clock)
         Files.write(out, code.getBytes(StandardCharsets.UTF_8))
         copyDir.foreach { d =>
           Files.createDirectories(d.toPath)
           Files.write(d.toPath.resolve(out.getFileName.toString), Files.readAllBytes(out))
+        }
+        sigDir.foreach { d =>
+          Files.createDirectories(d.toPath)
+          Files.write(d.toPath.resolve(s"$prefix.json"),
+            Signature.toJson(f.getName, sigBuf.fold(Seq.empty[Signature.ControlSig])(_.toSeq))
+              .getBytes(StandardCharsets.UTF_8))
         }
         val modules = prog.controls.map(_.name) ++ prog.parsers.map(_.name + "Parser")
         // 日志：stages==1 时与历史版本逐字一致（D4 门禁）；切拍时附加各 control 实际级数
@@ -128,11 +146,15 @@ object Generate {
   }
 }
 
-/** 命令行入口：P4cMain <in.p4> <outDir> [copyDir] [--stages N] */
+/** 命令行入口：P4cMain <in.p4> <outDir> [copyDir] [--stages N] [--clock W] [--sig-dir <dir>] */
 object P4cMain {
   def main(args: Array[String]): Unit = {
     val positional = scala.collection.mutable.ArrayBuffer.empty[String]
     var stages = 1
+    var stagesGiven = false
+    var clockW = 0
+    var clockGiven = false
+    var sigDir: Option[java.nio.file.Path] = None
     var usage = false
     var i = 0
     while (i < args.length && !usage) {
@@ -142,18 +164,40 @@ object P4cMain {
           else {
             try stages = args(i + 1).toInt
             catch { case _: NumberFormatException => usage = true }
+            stagesGiven = true
             i += 1
           }
+        case "--clock" =>
+          if (i + 1 >= args.length) usage = true
+          else {
+            try clockW = args(i + 1).toInt
+            catch { case _: NumberFormatException => usage = true }
+            clockGiven = true
+            i += 1
+          }
+        case "--sig-dir" =>
+          if (i + 1 >= args.length) usage = true
+          else { sigDir = Some(java.nio.file.Paths.get(args(i + 1))); i += 1 }
         case a => positional += a
       }
       i += 1
     }
+    if (stagesGiven && clockGiven) {
+      System.err.println("错误：--stages 与 --clock 互斥，只能指定其一")
+      System.exit(1)
+    }
+    if (clockGiven && clockW < 1) {
+      System.err.println("错误：--clock 必须 ≥ 1")
+      System.exit(1)
+    }
+    val clock = if (clockGiven) Some(clockW) else None
     if (usage || stages < 1 || positional.length < 2 || positional.length > 3) {
-      System.err.println("用法: P4cMain <in.p4> <outDir> [copyDir] [--stages N]   （N ≥ 1；1 = 不切拍）")
+      System.err.println("用法: P4cMain <in.p4> <outDir> [copyDir] [--stages N] [--clock W] [--sig-dir <dir>]" +
+        "   （N/W ≥ 1；--stages 1 = 不切拍；--clock = 每级最大权重上限，自动搜最小可行级数）")
       System.exit(1)
     }
     val copyOpt = if (positional.length > 2) Some(Paths.get(positional(2))) else None
-    val r = Generate.compileFile(Paths.get(positional(0)), Paths.get(positional(1)), copyOpt, stages)
+    val r = Generate.compileFile(Paths.get(positional(0)), Paths.get(positional(1)), copyOpt, stages, sigDir, clock)
     println(s"[P4C] ${r.p4File} -> ${r.scalaFile} (modules: ${r.modules.mkString(", ")})")
   }
 }

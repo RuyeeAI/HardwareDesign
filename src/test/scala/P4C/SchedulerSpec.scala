@@ -224,4 +224,54 @@ class SchedulerSpec extends AnyFlatSpec with Matchers {
     assertMonotone(sw)
     assertMonotone(su)
   }
+
+  // ---------------- X2：时钟约束模式 ----------------
+
+  behavior.of("Scheduler.minClock / stageDelays / minFeasibleStages（clock 模式）")
+
+  it should "minClock = 最大单节点权重（Bin 链 = 1）" in {
+    Scheduler.minClock(chainDag(7)) should be(1)
+    val b = new Builder
+    val idx = (b.add(InputRef(Seq("m", "idx"), 8)), 8)
+    val (rr, w) = b.regRead("stats", idx._1, idx._2, 16, 8)
+    val dag = b.finish(Seq(RegWrite("stats", idx._1, rr, w, 8)))
+    Scheduler.minClock(dag) should be(2) // RegRead 权重 2
+  }
+
+  it should "16 项加法链 clock=1 → 最小可行级数 16（每级恰一个 Bin）" in {
+    val dag = chainDag(17) // 16 个 Bin，W=16
+    Scheduler.minFeasibleStages(dag, 1, "test/deep") should be(16)
+    // 放宽 clock：两级各 8 个 Bin → delay = 8
+    Scheduler.minFeasibleStages(dag, 8) should be(2)
+    Scheduler.minFeasibleStages(dag, 16) should be(1) // 单级整体 delay=W 可行
+  }
+
+  it should "W=0（全布线 DAG）clock 模式返回 1" in {
+    val b = new Builder
+    val x0 = b.add(InputRef(Seq("m", "a"), 8))
+    val x1 = b.add(InputRef(Seq("m", "b"), 8))
+    val cat = b.add(Cat(Seq(x0, x1), 16))
+    val dag = b.finish(Seq(OutputWrite(Seq("m", "o"), cat, 16)))
+    Scheduler.minFeasibleStages(dag, 1) should be(1)
+  }
+
+  it should "clock 低于单节点最大权重 → P4Error 并报告最小可行周期" in {
+    val b = new Builder
+    val idx = (b.add(InputRef(Seq("m", "idx"), 8)), 8)
+    val (rr, w) = b.regRead("stats", idx._1, idx._2, 16, 8)
+    val dag = b.finish(Seq(RegWrite("stats", idx._1, rr, w, 8)))
+    val e = intercept[P4Error] { Scheduler.minFeasibleStages(dag, 1, "control C/action bump") }
+    e.getMessage should include("最小可行 clock = 2")
+    e.getMessage should include("control C/action bump")
+    intercept[P4Error] { Scheduler.minFeasibleStages(dag, 0) } // clock < 1
+  }
+
+  it should "stageDelays：调度结果每级延迟 ≤ clock（minFeasibleStages 的自洽性）" in {
+    val dag = chainDag(17)
+    val n = Scheduler.minFeasibleStages(dag, 2)
+    val s = Scheduler.schedule(dag, n, "test/selfcheck")
+    Scheduler.stageDelays(s).foreach(_ should be <= 2)
+    // 未调度 DAG = 单级，delay = max arrival
+    Scheduler.stageDelays(dag) should be(Seq(16))
+  }
 }

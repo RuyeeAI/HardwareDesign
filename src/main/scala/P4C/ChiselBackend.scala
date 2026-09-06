@@ -462,9 +462,14 @@ object ChiselBackend {
 
   private def emitControl(
     prefix: String, c: ControlDecl, prog: P4Program, tmap: String => String, globalStages: Int = 1,
+    sigs: Option[mutable.ArrayBuffer[Signature.ControlSig]] = None,
+    clock: Option[Int] = None,
   ): (Seq[String], Int) = {
     // E2：声明级指示覆盖全局预算（无指示 → 全局值；全局 1 且无指示 → 与历史逐字节一致）
     val stages = c.stagesOpt.getOrElse(globalStages)
+    // X2：clock 模式（--clock W，与声明级 stages 指示互斥——指示优先）。
+    // 每 DAG 独立解算最小可行级数；io 端口取保守超集（恒发 valid/outValid，供 Top 稳定接线）。
+    val clockMode = clock.isDefined && c.stagesOpt.isEmpty
     val resolver = resolverFor(prog, c)
     val externMap = c.externs.map(e => e.name -> e).toMap
     val stateful = c.externs.nonEmpty
@@ -486,11 +491,11 @@ object ChiselBackend {
       case p => throw new P4Error(s"行 ${p.line}：不支持的方向 '${p.direction}'")
     }
     // D5：valid 输入端口仅在 externs 非空或（切拍启用）时发射；默认模式 IO 与现状一致
-    if (stateful || stages > 1) out += s"$IND$IND val valid = Input(Bool())"
+    if (stateful || stages > 1 || clockMode) out += s"$IND$IND val valid = Input(Bool())"
     // extern 状态观察口
     c.externs.foreach { e => out += s"$IND$IND val ex_${e.name} = Output(Vec(${e.size}, UInt(${e.width}.W)))" }
     // D4：切拍模式下末级 stageValid 对外暴露
-    if (stages > 1) out += s"$IND$IND val outValid = Output(Bool())"
+    if (stages > 1 || clockMode) out += s"$IND$IND val outValid = Output(Bool())"
     // 运行时表写端口（D4：每表独立写口）
     if (rtTables.nonEmpty) {
       val existingIo = c.params.flatMap {
@@ -498,8 +503,8 @@ object ChiselBackend {
         case ControlParam(n, "in", _, _) => Seq(s"${n}In")
         case ControlParam(n, "out", _, _) => Seq(s"${n}Out")
         case _ => Seq.empty
-      }.toSet ++ (if (stateful || stages > 1) Set("valid") else Set.empty[String]) ++
-        c.externs.map(e => s"ex_${e.name}").toSet ++ (if (stages > 1) Set("outValid") else Set.empty[String])
+      }.toSet ++ (if (stateful || stages > 1 || clockMode) Set("valid") else Set.empty[String]) ++
+        c.externs.map(e => s"ex_${e.name}").toSet ++ (if (stages > 1 || clockMode) Set("outValid") else Set.empty[String])
       out += s"$IND$IND // 运行时表写端口（协议见文件头注释）"
       rtTables.foreach { t =>
         val lay = rtLayouts(t.name)
@@ -557,10 +562,24 @@ object ChiselBackend {
     val fire = if (stateful) Some("io.valid") else None
 
     // 切拍共享上下文与发射路由（D4：N=1 不创建、不走 StagedEmitter，原路径逐字节不变）
-    val shared = if (stages > 1) new StagedShared else null
+    val shared = if (stages > 1 || clockMode) new StagedShared else null
 
-    def scheduleDag(dag: Dag, ctx: String): Dag =
-      if (stages > 1) Scheduler.maybeSchedule(dag, stages, ctx) else dag
+    // 签名收集（X1）：各 DAG 的节点 → 流水级映射（未调度 = 全 0 级）
+    val dagSigs = mutable.ArrayBuffer.empty[Signature.DagSig]
+    def recordDag(ctx: String, d: Dag): Unit = dagSigs += Signature.dagSig(ctx, d)
+
+    /** 预算解算：声明级指示 > clock 模式（逐 DAG 最小可行级数）> 全局固定 N。 */
+    def budgetOf(dag: Dag, ctx: String): Int = c.stagesOpt.getOrElse(clock match {
+      case Some(w) => Scheduler.minFeasibleStages(dag, w, ctx)
+      case None => globalStages
+    })
+
+    def scheduleDag(dag: Dag, ctx: String): Dag = {
+      val n = budgetOf(dag, ctx)
+      val d = if (n > 1) Scheduler.maybeSchedule(dag, n, ctx) else dag
+      recordDag(ctx, d)
+      d
+    }
 
     def emitDag(dag: Dag): Unit = {
       if (dag.isScheduled) {
@@ -617,13 +636,14 @@ object ChiselBackend {
               throw new P4Error(
                 s"行 ${t.line}：运行时表 '${t.name}' 不允许 const entries（仅允许 default 行；" +
                   "表项请在运行时经写接口下发）")
-            if (stages > 1)
+            if (stages > 1 || clockMode)
               throw new P4Error(
-                s"行 ${t.line}：运行时表 '${t.name}' 暂不支持切拍（--stages > 1），本期仅 N=1")
-            emitRuntimeTable(t, c, prog, resolver, externMap, stateful, s"$IND", rtLayouts(t.name))
+                s"行 ${t.line}：运行时表 '${t.name}' 暂不支持切拍（--stages > 1 或 --clock 约束下），本期仅 N=1")
+            emitRuntimeTable(t, c, prog, resolver, externMap, stateful, s"$IND", rtLayouts(t.name), recordDag)
           } else {
             if (t.entries.isEmpty) throw new P4Error(s"行 $ln：table '$n' 无 const entries（M2 仅支持静态融合）")
-            emitStaticTable(t, c, prog, resolver, externMap, stateful, s"$IND", stages, shared)
+            val clockRes = clock.map { w => (d: Dag) => Scheduler.minFeasibleStages(d, w, s"table ${t.name}") }
+            emitStaticTable(t, c, prog, resolver, externMap, stateful, s"$IND", stages, shared, recordDag, clockRes)
           }
         out ++= lines
         maxStageCount = math.max(maxStageCount, tableN)
@@ -633,7 +653,7 @@ object ChiselBackend {
     }
 
     // D4：control 输出有效 = 所有已发射 valid 链的末级 stageValid（多链取与）
-    if (stages > 1) {
+    if (stages > 1 || clockMode) {
       val cond = shared.usedLastStages match {
         case Seq() => "io.valid" // 无切拍管线（全部 DAG 为空/纯组合单级）
         case Seq(single) => single
@@ -644,6 +664,43 @@ object ChiselBackend {
     }
 
     out += "}"
+    sigs.foreach { buf =>
+      val ports = mutable.ArrayBuffer.empty[Signature.PortSig]
+      def flattenInOut(paramName: String, typeName: String, dir: String): Unit =
+        prog.structs.find(_.name == typeName).foreach { st =>
+          st.members.foreach {
+            case StructMember(_, true, w, n) => ports += Signature.PortSig(s"$paramName.$n", dir, w)
+            case StructMember(tn, false, _, n) =>
+              prog.headerTypes.find(_.name == tn).foreach { ht =>
+                ht.fields.foreach(f => ports += Signature.PortSig(s"$paramName.$n.${f.name}", dir, f.width))
+              }
+          }
+        }
+      c.params.foreach {
+        case ControlParam(n, "inout", t, _) =>
+          flattenInOut(s"${n}In", t, "input"); flattenInOut(s"${n}Out", t, "output")
+        case ControlParam(n, "in", t, _) => flattenInOut(s"${n}In", t, "input")
+        case ControlParam(n, "out", t, _) => flattenInOut(s"${n}Out", t, "output")
+        case _ =>
+      }
+      if (stateful || stages > 1 || clockMode) ports += Signature.PortSig("valid", "input", 1)
+      c.externs.foreach(e => ports += Signature.PortSig(s"ex_${e.name}", "output", e.width, vecSize = e.size))
+      if (stages > 1 || clockMode) ports += Signature.PortSig("outValid", "output", 1)
+      rtTables.foreach { t =>
+        val lay = rtLayouts(t.name)
+        ports += Signature.PortSig(s"tbl_${t.name}_we", "input", 1)
+        ports += Signature.PortSig(s"tbl_${t.name}_waddr", "input", lay.addrW)
+        ports += Signature.PortSig(s"tbl_${t.name}_wdata", "input", lay.entryW)
+      }
+      val tableSigs = c.tables.map { t =>
+        if (t.isRuntime) {
+          val lay = rtLayouts(t.name)
+          Signature.TableSig(t.name, runtime = true, t.runtimeSize, lay.keyBits, lay.actW, lay.argW, lay.entryW, lay.addrW)
+        } else Signature.TableSig(t.name, runtime = false, t.entries.size)
+      }
+      val externSigs = c.externs.map(e => Signature.ExternSig(e.name, e.kind, e.width, e.size))
+      buf += Signature.ControlSig(className, ports.toSeq, tableSigs, externSigs, dagSigs.toSeq)
+    }
     (out.toSeq, maxStageCount)
   }
 
@@ -658,6 +715,8 @@ object ChiselBackend {
     t: TableDecl, c: ControlDecl, prog: P4Program, resolver: WidthResolver,
     externMap: Map[String, ExternInst], stateful: Boolean, indent: String,
     stages: Int = 1, shared: StagedShared = null,
+    recordDag: (String, Ir.Dag) => Unit = (_, _) => (),
+    clockRes: Option[Ir.Dag => Int] = None,
   ): (Seq[String], Int) = {
     val out = mutable.ArrayBuffer.empty[String]
     out += s"$indent// table ${t.name}（静态融合，${t.entries.size} 项）"
@@ -681,19 +740,27 @@ object ChiselBackend {
     // 各字段写出：收集所有非 default 表项的写出字段
     val defaultEntry = t.entries.find(_.isDefault)
     case class EntryDag(entry: TableEntry, dag: Ir.Dag, hits: Boolean, idx: Int)
+    /** 预算解算：clock 模式逐 entry DAG 解最小可行级数；否则固定 stages。 */
+    def nOf(d: Ir.Dag, ctx: String): Int = clockRes match {
+      case Some(f) => f(d)
+      case None => stages
+    }
     def schedEntry(e: TableEntry): Ir.Dag = {
       val d0 = lowerEntry(e, resolver, c, prog, externMap)
-      if (stages > 1) Scheduler.maybeSchedule(d0, stages, s"table ${t.name}/${e.action}") else d0
+      val ctx = s"table ${t.name}/${e.action}"
+      val n = nOf(d0, ctx)
+      if (n > 1) Scheduler.maybeSchedule(d0, n, ctx) else d0
     }
     val entryDags = nonDefault.zipWithIndex.map { case (e, i) =>
       EntryDag(e, schedEntry(e), hits = true, idx = i)
     } ++ defaultEntry.map(e => EntryDag(e, schedEntry(e), hits = false, -1))
+    entryDags.foreach(ed => recordDag(s"table ${t.name}/${ed.entry.action}", ed.dag))
 
     // 切拍：各 entry 的 StagedEmitter（字段值/状态写都从这些实例取）
     val stagedEms = mutable.HashMap.empty[Int, StagedEmitter]
     var maxStageCount = 1
     entryDags.foreach { ed =>
-      if (stages > 1 && ed.dag.isScheduled) {
+      if ((stages > 1 || clockRes.isDefined) && ed.dag.isScheduled) {
         val se = new StagedEmitter(
           ed.dag, p => readOf(p.head, p.drop(1)), indent,
           baseValid = if (stateful) "io.valid" else "true.B",
@@ -779,6 +846,7 @@ object ChiselBackend {
   private def emitRuntimeTable(
     t: TableDecl, c: ControlDecl, prog: P4Program, resolver: WidthResolver,
     externMap: Map[String, ExternInst], stateful: Boolean, indent: String, lay: RuntimeLayout,
+    recordDag: (String, Ir.Dag) => Unit = (_, _) => (),
   ): (Seq[String], Int) = {
     val out = mutable.ArrayBuffer.empty[String]
     out += s"$indent// table ${t.name}（运行时，size=${t.runtimeSize}）"
@@ -816,6 +884,7 @@ object ChiselBackend {
       }
       (i, a, Passes.runAll(b.finish(outs)))
     }
+    actionDags.foreach { case (_, a, dag) => recordDag(s"rt table ${t.name}/${a.name}", dag) }
 
     /** 形参 → 参数位串切片。偏移相对 `rt_<name>_args` 字段内部（该字段已是条目的
       * [argW+keyBits-1 : keyBits] 段），先声明者占高位（见 RuntimeLayout.argOffsets）。 */
@@ -844,6 +913,7 @@ object ChiselBackend {
     // default entry（D3：编译期固定；参数走 lowerEntry 的常量路径，stateful 写无命中门控）
     val defaultDag = t.entries.find(_.isDefault).map(e => lowerEntry(e, resolver, c, prog, externMap))
     defaultDag.foreach { dag =>
+      recordDag(s"rt table ${t.name}/default", dag)
       val stateSinks = dag.outputs.filter { case _: OutputWrite => false; case _ => true }
       if (stateSinks.nonEmpty) {
         val em = new Emitter(dag, p => readOf(p.head, p.drop(1)), indent, Some(baseFire))
@@ -1161,7 +1231,11 @@ object ChiselBackend {
 
   /** 仅模块（自带带前缀的 Bundle 定义）。
     * @return (生成源码, 各 control 的实际切分级数，仅 stages>1 时有意义) */
-  def emitModules(prog: P4Program, moduleNamePrefix: String, sourceName: String, stages: Int = 1): (String, Map[String, Int]) = {
+  def emitModules(
+    prog: P4Program, moduleNamePrefix: String, sourceName: String, stages: Int = 1,
+    sigs: Option[mutable.ArrayBuffer[Signature.ControlSig]] = None,
+    clock: Option[Int] = None,
+  ): (String, Map[String, Int]) = {
     if (stages < 1) throw new P4Error(s"拍数预算 N 必须 ≥ 1（got $stages）")
     val tmap0 = typeMapOf(prog, moduleNamePrefix)
     val tmap: String => String = n => tmap0.getOrElse(n, n)
@@ -1183,14 +1257,14 @@ object ChiselBackend {
     out ++= emitBundles(prog, tmap)
     val stageCounts = mutable.LinkedHashMap.empty[String, Int]
     prog.controls.foreach { c =>
-      val (lines, n) = emitControl(moduleNamePrefix, c, prog, tmap, stages)
+      val (lines, n) = emitControl(moduleNamePrefix, c, prog, tmap, stages, sigs, clock)
       out ++= lines; out += ""
       stageCounts(c.name) = n
     }
     prog.parsers.foreach { p => out ++= emitParser(moduleNamePrefix, p, prog, tmap); out += "" }
     // M5：parser + control 同时存在时，发射管线 Top
     if (prog.parsers.nonEmpty && prog.controls.nonEmpty) {
-      out ++= emitTop(moduleNamePrefix, prog.parsers.head, prog.controls.head, prog, tmap, stages)
+      out ++= emitTop(moduleNamePrefix, prog.parsers.head, prog.controls.head, prog, tmap, stages, clock)
       out += ""
     }
     (out.mkString("\n"), stageCounts.toMap)
@@ -1201,10 +1275,12 @@ object ChiselBackend {
     * 满足发起间隔 ≥ N 契约；io.outValid 透传 control 的末级 stageValid。 */
   private def emitTop(
     prefix: String, p: ParserDecl, c: ControlDecl, prog: P4Program, tmap: String => String,
-    globalStages: Int = 1,
+    globalStages: Int = 1, clock: Option[Int] = None,
   ): Seq[String] = {
     // E2：Top 的流水契约跟随 control 的生效预算（声明级指示优先）
     val stages = c.stagesOpt.getOrElse(globalStages)
+    // X2：clock 模式下 control 恒发 valid/outValid 端口（保守超集），Top 稳定接线
+    val clockMode = clock.isDefined && c.stagesOpt.isEmpty
     val out = mutable.ArrayBuffer.empty[String]
     val parserCls = pascal(prefix) + pascal(p.name) + "Parser"
     val controlCls = pascal(prefix) + pascal(c.name)
@@ -1266,7 +1342,7 @@ object ChiselBackend {
     // control 只在解析完成后执行一次
     out += s"$IND val fired = RegInit(false.B)"
     out += s"$IND val fire = parser.io.done && !parser.io.error && !fired"
-    if (stages > 1) {
+    if (stages > 1 || clockMode) {
       // 切拍：fire 为单拍脉冲，作为流水第 0 级 valid（sV 链为延迟线，脉冲逐级传播，
       // 末级在 fire 后第 n-1 拍出现单拍 outValid 与一次状态提交）
       out += s"$IND ingress.io.valid := fire"
@@ -1275,7 +1351,7 @@ object ChiselBackend {
     }
     out += s"$IND when (fire) { fired := true.B }"
     out += ""
-    if (stages > 1) out += s"$IND io.outValid := ingress.io.outValid"
+    if (stages > 1 || clockMode) out += s"$IND io.outValid := ingress.io.outValid"
     else out += s"$IND io.outValid := RegNext(fire)"
     out += s"$IND io.error := parser.io.error"
     c.params.foreach { cp =>
@@ -1287,8 +1363,12 @@ object ChiselBackend {
   }
 
   /** 单文件发射（CLI 模式：类型 + 模块合一）。 */
-  def emitProgram(prog: P4Program, moduleNamePrefix: String, sourceName: String, stages: Int = 1): String = {
-    val (modules, _) = emitModules(prog, moduleNamePrefix, sourceName, stages)
+  def emitProgram(
+    prog: P4Program, moduleNamePrefix: String, sourceName: String, stages: Int = 1,
+    sigs: Option[mutable.ArrayBuffer[Signature.ControlSig]] = None,
+    clock: Option[Int] = None,
+  ): String = {
+    val (modules, _) = emitModules(prog, moduleNamePrefix, sourceName, stages, sigs, clock)
     emitTypes(prog) + "\n" + modules
   }
 
