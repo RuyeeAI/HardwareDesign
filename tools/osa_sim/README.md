@@ -1,7 +1,7 @@
 # OSA Performance Model & Validation Suite
 
 Cycle-accurate model and test environment for the OSA buffer architecture
-described in [`docs/OSA.md`](../../docs/OSA.md) (§6.1 buffer organization,
+described in [`docs/OSA.md`](../../docs/FPP/OSA.md) (§6.1 buffer organization,
 §6.2 slot arbitration, §6.3 arbitration priority & performance guarantees).
 
 ## Quick start

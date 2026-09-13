@@ -15,6 +15,10 @@ build/
 *.anno.json
 *.zip
 
+# 例外：rtl/ 下的 .v 是手写源码（参考 RTL 归档），不是生成物，必须入库
+# 注意：否定规则必须排在 *.v 之后才生效
+!rtl/**
+
 # 大体积参考资料（按需放 docs/ 并手动 git add -f）
 *-飞书云文档.html
 Mermaid-Syntax-Reference.md

@@ -39,15 +39,32 @@ sbt "runMain HBS.swf.SwfMain"   # HBS 顶层 SwfCore 的 Verilog 生成（需大
 | `fifo/` | 同步/异步 FIFO（多存储后端） |
 | `async/` | CDC 同步器、脉冲同步、异步复位同步（行为级原语 + desiredName 供后端替换） |
 | `arbiter/` | RR/WRR/iSLIP 仲裁器 |
-| `data/` | GenModule/GenBundle 基类、Record 容器 |
+| `data/` | GenModule/GenBundle 基类、Record 容器、★ 设计→IR 导出机件（`GenParam`/`GenIR`/`GenDataStructure`/`GenMemory`/`GenFieldListFromBundle`） |
 | `io/` | 主机侧文件/JSON/随机工具 |
-| `annotation/` `Area/` `Clos/` | 后端注解、面积估算、Benes Clos 网络 |
+| `annotation/` `Area/` `Clos/` `CBFC/` | 后端注解、面积估算、Benes Clos 网络、信用流控发送端口（WIP） |
 | `RegCbb/` | ★ 寄存器框架：DSL 定义 → 地址分配 → RTL → JSON/C 头/Markdown/HTML 生成 |
 
 ### FPP — 网络处理（`src/main/scala/FPP/`）
 
 - `Parser/`：多协议报文头解析流水线（ETH/VLAN/MPLS/IPv4/IPv6/TCP/UDP/GRE/隧道等）
 - `OSA/OSM/`：输出侧调度/组包（分段、上下文分配、缓存、信元组装、出口调度、反压）
+- `Table.scala` + `LbTableDefinition.scala` + `LB/cfg/`：ECMP/LB 表项定义（`GenBundle` + `fldAttr` 描述）
+- `FvProfile/`：FV（field vector）profile 划分的纯 Scala 模型
+
+### Demo — 「参数→IR→JSON」演示（`src/main/scala/Demo/`）
+
+`GenParam` + `GenMemory`/`GenIR`/`GenDataStructure` 的活样例：`sbt "runMain Demo.Main"` 生成
+`generated/DemoIR.json`。`TestSram` 演示 `DescribedSRAM`（带描述信息的 SRAM + annotation 记录）。
+
+### Perf — 性能模型（`src/main/scala/Perf/`，纯 Scala，无 Chisel）
+
+`Perf/common/`：仲裁器 / CAQM / 延迟线 / 包生成器 / 性能监视器 / Shaper；
+`Perf/FPP/`：EPP 数据通路（`EppDatapath`、`EPP_TC0`、`S93_EPP`、`AbsPfc`）。
+入口 `Perf.FPP.Main` / `absTest` / `xTest`，CSV 产物写 `generated/`。
+
+### Maze — 网格路由玩具模型（`src/main/scala/Maze/`）
+
+`Node`/`TOPO`/`Maze`（Torus 拓扑互连），入口 `sbt "runMain Maze.MazeGen"` 生成 SystemVerilog 到 `generated/`。
 
 ### HBS — 高带宽交换（`src/main/scala/HBS/`）
 
@@ -68,6 +85,11 @@ sbt "runMain HBS.swf.SwfMain"   # HBS 顶层 SwfCore 的 Verilog 生成（需大
 ### 其他
 
 - `ImpulseGenerator/`：受控脉冲发生器
+
+## 参考文档（`docs/`）
+
+`UET.md`、`Hotchips 2024.md`、`FlowControl.svg`、`UB.svg`、`UEC.svg` 等为 2026-09-13 从
+`IdeaProjects/hardware-design`（gitee `ethanhao/hardware-design`）收编的阅读笔记与参考图。
 
 ## 参考 RTL 归档（`rtl/`）
 

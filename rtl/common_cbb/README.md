@@ -11,7 +11,7 @@
 | **用途 1** | `BaseCbb`（Chisel 重写版）的**语义对照基线** —— 重写有歧义时以此为准 |
 | **用途 2** | 后端**原语来源** —— `BaseCbb` 中若干 `BlackBox` 需要外部 Verilog 实体 |
 | **来源** | 作者 Ethan Hao，2015-09 ~ 2015-10 编写，Windows 工程（原路径 `E:/project/common_cbb/`） |
-| **归档原则** | 内容**逐字节原样保留**（29/29 文件 md5 校验一致），仅丢弃 IDE 元数据与重复文件 |
+| **归档原则** | 内容**逐字节原样保留**（29/29 文件 md5 校验一致，含 CRLF 原样），仅丢弃 IDE 元数据与重复文件 |
 
 > ⚠️ 这是**只读参考件**。需要修改功能时改 `src/main/scala/BaseCbb/`，不要改这里。
 
@@ -106,6 +106,17 @@ verilator --lint-only -f /tmp/common_cbb_local.f
 ## 归档记录（2026-09-13）
 
 **纳入（29 个文件，全部 md5 校验一致）**：上述树中全部 `.v` / `.pl` / `.f` / `.vsdx`。
+
+**补档（同日，第二次）**：首次归档时实际只复制进来 16 个文件，本 README 的目录树所列的另外 13 个
+（`common_cbb(1).f`、`dff/dff.v`、`dff/dff.f`、`shifter/barrel_shifter_gen.pl`、`shifter/bs8~bs1024.v`（8 个）、
+`shifter/ma_fv_builder_mux.v`）在源目录里被漏掉，导致"README 声称 29 个 / 磁盘只有 17 个"的缺口。
+已从**原库（原 `Code-Repos/common_cbb/`，当时已移入废纸篓，位于 `~/Library/Mobile Documents/.Trash/common_cbb/`）
+的完整副本**补齐：13/13 与源副本逐字节 md5 一致，CRLF 原样保留，`cp -p` 保持时间戳。
+至此归档 = 29 个源文件 + 本 README，与本文档描述完全一致。
+
+> 补档时同时也验证过 `IdeaProjects/hardware-design/src/common_cbb/` 里的另一份副本：内容与原件
+> 去行尾 CR 后完全相同，但该仓库**没有 `.gitattributes`**，CRLF 已被 `core.autocrlf=input` 归一化成 LF，
+> 因此**不可**用作字节保真的来源（只能用于内容比对）。
 
 **丢弃（9 项）**：
 
