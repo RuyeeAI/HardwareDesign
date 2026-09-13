@@ -48,7 +48,7 @@ sbt "runMain HBS.swf.SwfMain"   # HBS 顶层 SwfCore 的 Verilog 生成（需大
 
 - `Parser/`：多协议报文头解析流水线（ETH/VLAN/MPLS/IPv4/IPv6/TCP/UDP/GRE/隧道等）
 - `OSA/OSM/`：输出侧调度/组包（分段、上下文分配、缓存、信元组装、出口调度、反压）
-- `Table.scala` + `LbTableDefinition.scala` + `LB/cfg/`：ECMP/LB 表项定义（`GenBundle` + `fldAttr` 描述）
+- `Table.scala` + `LB/cfg/{DataStruct, LbTableDefinition}.scala`：ECMP/LB 表项定义（`GenBundle` + `fldAttr` 描述）
 - `FvProfile/`：FV（field vector）profile 划分的纯 Scala 模型
 
 ### Demo — 「参数→IR→JSON」演示（`src/main/scala/Demo/`）
@@ -61,10 +61,6 @@ sbt "runMain HBS.swf.SwfMain"   # HBS 顶层 SwfCore 的 Verilog 生成（需大
 `Perf/common/`：仲裁器 / CAQM / 延迟线 / 包生成器 / 性能监视器 / Shaper；
 `Perf/FPP/`：EPP 数据通路（`EppDatapath`、`EPP_TC0`、`S93_EPP`、`AbsPfc`）。
 入口 `Perf.FPP.Main` / `absTest` / `xTest`，CSV 产物写 `generated/`。
-
-### Maze — 网格路由玩具模型（`src/main/scala/Maze/`）
-
-`Node`/`TOPO`/`Maze`（Torus 拓扑互连），入口 `sbt "runMain Maze.MazeGen"` 生成 SystemVerilog 到 `generated/`。
 
 ### HBS — 高带宽交换（`src/main/scala/HBS/`）
 
