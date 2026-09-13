@@ -2,15 +2,15 @@ package BaseCbb.arbiter
 
 import BaseCbb._
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class HellaArbitersSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class HellaArbitersSpec extends AnyFlatSpec with Matchers {
 
   "HellaCountingArbiter" should "grant to valid input" in {
-    test(new HellaCountingArbiter(UInt(8.W), 4, 2)) { c =>
+    simulate(new HellaCountingArbiter(UInt(8.W), 4, 2)) { c =>
       c.io.in(0).valid.poke(true.B)
       c.io.in(0).bits.poke(10.U)
       c.io.in(1).valid.poke(false.B)
@@ -25,7 +25,7 @@ class HellaArbitersSpec extends AnyFlatSpec with ChiselScalatestTester with Matc
   }
 
   "HellaCountingArbiter" should "round robin when rr=true" in {
-    test(new HellaCountingArbiter(UInt(8.W), 4, 2, rr=true)) { c =>
+    simulate(new HellaCountingArbiter(UInt(8.W), 4, 2, rr=true)) { c =>
       c.io.in(0).valid.poke(true.B)
       c.io.in(0).bits.poke(1.U)
       c.io.in(1).valid.poke(true.B)
@@ -42,7 +42,7 @@ class HellaArbitersSpec extends AnyFlatSpec with ChiselScalatestTester with Matc
   }
 
   "HellaCountingArbiter" should "unlock after count transactions" in {
-    test(new HellaCountingArbiter(UInt(8.W), 2, 3)) { c =>
+    simulate(new HellaCountingArbiter(UInt(8.W), 2, 3)) { c =>
       c.io.in(0).valid.poke(true.B)
       c.io.in(0).bits.poke(10.U)
       c.io.in(1).valid.poke(false.B)

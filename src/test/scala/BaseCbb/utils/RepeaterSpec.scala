@@ -2,15 +2,15 @@ package BaseCbb.utils
 import BaseCbb.misc.Repeater
 import BaseCbb.utils.timer._
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class RepeaterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class RepeaterSpec extends AnyFlatSpec with Matchers {
 
   "Repeater" should "pass through when not repeating" in {
-    test(new Repeater(UInt(8.W))) { c =>
+    simulate(new Repeater(UInt(8.W))) { c =>
       c.io.repeat.poke(false.B)
       c.io.enq.valid.poke(true.B)
       c.io.enq.bits.poke(42.U)
@@ -23,7 +23,7 @@ class RepeaterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Repeater" should "save and repeat when repeat is high" in {
-    test(new Repeater(UInt(8.W))) { c =>
+    simulate(new Repeater(UInt(8.W))) { c =>
       // First cycle: write 99, repeat=false, should pass through
       c.io.repeat.poke(false.B)
       c.io.enq.valid.poke(true.B)
@@ -56,7 +56,7 @@ class RepeaterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Repeater" should "signal full when saved" in {
-    test(new Repeater(UInt(8.W))) { c =>
+    simulate(new Repeater(UInt(8.W))) { c =>
       c.io.repeat.poke(false.B)
       c.io.enq.valid.poke(true.B)
       c.io.enq.bits.poke(77.U)

@@ -3,7 +3,9 @@ package BaseCbb.memory
 import BaseCbb.data.GenBundle
 import chisel3.util._
 import chisel3._
-import chisel3.stage.ChiselStage
+// 注意：本文件 import 了 chisel3.util._，其中含有 chisel3.util.circt 子包，
+// 会遮蔽根包 circt，必须用 _root_ 限定。
+import _root_.circt.stage.ChiselStage
 import java.io.PrintWriter
 
 

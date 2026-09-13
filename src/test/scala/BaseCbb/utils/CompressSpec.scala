@@ -3,13 +3,12 @@ import BaseCbb.math.{Compress, Scatter}
 import BaseCbb.utils.timer._
 import chisel3._
 import chisel3.util._
-import chiseltest._
-import chiseltest.simulator.WriteVcdAnnotation
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class CompressSpec extends AnyFlatSpec with Matchers {
 
   // Convert a Seq[Boolean] to an integer bitmask (element 0 = LSB)
   private def boolMask(bits: Seq[Boolean]): BigInt =
@@ -25,7 +24,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   // ---- Compress basic cases ----
 
   "Compress N=8" should "pack all valid elements to LSB" in {
-    test(new Compress(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 8)) { c =>
       val data = Seq(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22)
       val valid = Seq(true, false, true, false, true, false, true, false)
 
@@ -46,7 +45,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Compress" should "output all zeros when no elements are valid" in {
-    test(new Compress(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 8)) { c =>
       val data = Seq(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22)
       c.io.in.zip(data).foreach { case (port, v) => port.poke(v.U) }
       c.io.valid.poke(0.U)
@@ -60,7 +59,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Compress" should "pass through when all elements are valid" in {
-    test(new Compress(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 8)) { c =>
       val data = Seq(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08)
       c.io.in.zip(data).foreach { case (port, v) => port.poke(v.U) }
       c.io.valid.poke(((1 << 8) - 1).U)
@@ -74,7 +73,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Compress" should "work with only LSB valid" in {
-    test(new Compress(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 8)) { c =>
       val data = Seq(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22)
       c.io.in.zip(data).foreach { case (port, v) => port.poke(v.U) }
       c.io.valid.poke(1.U)
@@ -89,7 +88,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Compress" should "work with only MSB valid" in {
-    test(new Compress(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 8)) { c =>
       val data = Seq(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22)
       c.io.in.zip(data).foreach { case (port, v) => port.poke(v.U) }
       c.io.valid.poke((1 << 7).U)
@@ -104,7 +103,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Compress N=1" should "work with valid=0" in {
-    test(new Compress(UInt(8.W), 1)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 1)) { c =>
       c.io.in(0).poke(0x42.U)
       c.io.valid.poke(0.U)
       c.clock.step(1)
@@ -114,7 +113,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Compress N=1" should "work with valid=1" in {
-    test(new Compress(UInt(8.W), 1)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 1)) { c =>
       c.io.in(0).poke(0x42.U)
       c.io.valid.poke(1.U)
       c.clock.step(1)
@@ -126,7 +125,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   // ---- Scatter basic cases ----
 
   "Scatter N=8" should "place elements at mask positions" in {
-    test(new Scatter(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Scatter(UInt(8.W), 8)) { c =>
       val data = Seq(0xA, 0xB, 0xC, 0xD, 0xE, 0xF, 0x1, 0x2)
       val mask = Seq(true, false, true, false, true, false, true, false)
 
@@ -146,7 +145,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Scatter" should "output all zeros with zero mask" in {
-    test(new Scatter(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Scatter(UInt(8.W), 8)) { c =>
       val data = Seq(0xA, 0xB, 0xC, 0xD, 0xE, 0xF, 0x1, 0x2)
       c.io.in.zip(data).foreach { case (port, v) => port.poke(v.U) }
       c.io.mask.poke(0.U)
@@ -159,7 +158,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Scatter" should "pass through with all-ones mask" in {
-    test(new Scatter(UInt(8.W), 8)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Scatter(UInt(8.W), 8)) { c =>
       val data = Seq(0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8)
       c.io.in.zip(data).foreach { case (port, v) => port.poke(v.U) }
       c.io.mask.poke(((1 << 8) - 1).U)
@@ -172,7 +171,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Scatter N=1" should "work with mask=0" in {
-    test(new Scatter(UInt(8.W), 1)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Scatter(UInt(8.W), 1)) { c =>
       c.io.in(0).poke(0x42.U)
       c.io.mask.poke(0.U)
       c.clock.step(1)
@@ -181,7 +180,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Scatter N=1" should "work with mask=1" in {
-    test(new Scatter(UInt(8.W), 1)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Scatter(UInt(8.W), 1)) { c =>
       c.io.in(0).poke(0x42.U)
       c.io.mask.poke(1.U)
       c.clock.step(1)
@@ -195,7 +194,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
 
   testWidths.foreach { n =>
     s"Compress N=$n randomized" should "match reference model" in {
-      test(new Compress(UInt(8.W), n)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+      simulate(new Compress(UInt(8.W), n)) { c =>
         val rng = new scala.util.Random(42)
         for (_ <- 0 until 100) {
           val data  = Seq.fill(n)(rng.nextInt(256) & 0xFF)
@@ -217,7 +216,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
 
   testWidths.foreach { n =>
     s"Scatter N=$n randomized" should "place elements at correct mask positions" in {
-      test(new Scatter(UInt(8.W), n)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+      simulate(new Scatter(UInt(8.W), n)) { c =>
         val rng = new scala.util.Random(123)
         for (_ <- 0 until 100) {
           val packed = Seq.fill(n)(rng.nextInt(256) & 0xFF)
@@ -244,7 +243,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   // ---- Round-trip test ----
 
   "Compress + Scatter" should "recover original valid elements" in {
-    test(new Compress(UInt(8.W), 4)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(8.W), 4)) { c =>
       val rng = new scala.util.Random(99)
       for (_ <- 0 until 50) {
         val data  = Seq.fill(4)(rng.nextInt(256) & 0xFF)
@@ -267,7 +266,7 @@ class CompressSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   // ---- Wider data types ----
 
   "Compress with UInt(32.W)" should "work correctly" in {
-    test(new Compress(UInt(32.W), 4)).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    simulate(new Compress(UInt(32.W), 4)) { c =>
       val data = Seq(0xDEADBEEFL, 0xCAFEBABEL, 0x12345678L, 0xABCDEF01L)
       val valid = Seq(true, false, true, false)
 

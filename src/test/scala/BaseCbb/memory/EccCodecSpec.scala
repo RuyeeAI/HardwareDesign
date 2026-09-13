@@ -1,7 +1,7 @@
 package BaseCbb.memory
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -66,7 +66,7 @@ class EccCodecHarness(dataBits: Int, protectWidthTh: Int, protect: MemoryProtect
   io.uerr := uerr
 }
 
-class EccCodecSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class EccCodecSpec extends AnyFlatSpec with Matchers {
 
   behavior.of("EccCodec")
 
@@ -81,7 +81,7 @@ class EccCodecSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   private def checkConfig(dataBits: Int, th: Int, protect: MemoryProtectType.Value, doubleBitSamples: Int): Unit = {
     val rnd = new scala.util.Random(0x5EED ^ dataBits ^ th)
     val info = s"(dataBits=$dataBits th=$th protect=$protect)"
-    test(new EccCodecHarness(dataBits, th, protect)) { c =>
+    simulate(new EccCodecHarness(dataBits, th, protect)) { c =>
       val encWidth = c.encWidth
 
       // ── 无错回环 ────────────────────────────────────────────────
@@ -194,9 +194,9 @@ class MemoryWrapPhysicalElabSpec extends AnyFlatSpec with Matchers {
       flopOut = true,
       isPhysicalMemory = true
     )
-    val svSp = chisel3.stage.ChiselStage.emitSystemVerilog(new SpMemoryWrap(cfg))
+    val svSp = _root_.circt.stage.ChiselStage.emitSystemVerilog(new SpMemoryWrap(cfg))
     svSp should include("PhysMemSample")
-    val svTp = chisel3.stage.ChiselStage.emitSystemVerilog(new TpMemoryWrap(cfg))
+    val svTp = _root_.circt.stage.ChiselStage.emitSystemVerilog(new TpMemoryWrap(cfg))
     svTp should include("PhysMemSample")
   }
 

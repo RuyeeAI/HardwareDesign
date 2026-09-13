@@ -1,14 +1,14 @@
 package BaseCbb.memory
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import BaseCbb.memory.Memory
 import BaseCbb.memory.MemoryAccessType
 
-class MemorySpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class MemorySpec extends AnyFlatSpec with Matchers {
 
   "Memory case class" should "have bypassOnConflict default false" in {
     val mem = Memory(

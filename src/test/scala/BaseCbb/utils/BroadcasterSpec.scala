@@ -2,15 +2,15 @@ package BaseCbb.utils
 import BaseCbb.misc.Broadcaster
 import BaseCbb.utils.timer._
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class BroadcasterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class BroadcasterSpec extends AnyFlatSpec with Matchers {
 
   "Broadcaster" should "broadcast to 4 outputs in round-robin" in {
-    test(new Broadcaster(UInt(8.W), 4)) { c =>
+    simulate(new Broadcaster(UInt(8.W), 4)) { c =>
       c.io.in.valid.poke(true.B)
       c.io.in.bits.poke(42.U)
 

@@ -2,12 +2,13 @@ package BaseCbb.RegCbb
 
 import chisel3._
 import chisel3.util.RegEnable
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.freespec.AnyFreeSpec
 import BaseCbb.RegCbb.demo.UartDemoDef
 import BaseCbb.RegCbb.demo.UartSystemDemo
 import BaseCbb.RegCbb.hw._
 import BaseCbb.RegCbb.gen._
+import BaseCbb.SimReset
 
 /**
  * 系统级（多功能模块）测试：
@@ -16,7 +17,7 @@ import BaseCbb.RegCbb.gen._
  *  - SystemRegView 三级命名访问（module → block → reg）
  *  - 系统级文档生成（不依赖外围逻辑）
  */
-class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
+class SystemRegTest extends AnyFreeSpec {
 
   private val BASE = 0x40000000L
 
@@ -56,7 +57,8 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "模块间译码分发：uart 寄存器可访问，gpio 寄存器可访问" in {
-    test(new UartSystemDemo) { c =>
+    simulate(new UartSystemDemo) { c =>
+      SimReset(c)
       // uart scratch @ 0x18（相对 uart base）
       assert(read(c, BASE + 0x18) == 0xDEADBEEFL)
       write(c, BASE + 0x18, 0x12345678L)
@@ -74,7 +76,7 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "模块间隔离：访问 uart 地址不影响 gpio，反之亦然" in {
-    test(new UartSystemDemo) { c =>
+    simulate(new UartSystemDemo) { c =>
       val sysMap = AddressAllocator.allocateSystem(UartDemoDef.build)
       val gpioBase = sysMap.moduleByName("gpio").baseAddress
       val gb = gpioBase.toLong
@@ -92,7 +94,7 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "未命中任何模块的地址返回 0" in {
-    test(new UartSystemDemo) { c =>
+    simulate(new UartSystemDemo) { c =>
       // uart 模块后、gpio 模块前的大空隙地址 → 未命中
       val sysMap = AddressAllocator.allocateSystem(UartDemoDef.build)
       val gpioBase = sysMap.moduleByName("gpio").baseAddress
@@ -105,7 +107,7 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "SystemRegView 三级命名访问" in {
-    test(new UartSystemDemo) { c =>
+    simulate(new UartSystemDemo) { c =>
       // 通过三级视图写 uart data_regs 块中的 scratch
       write(c, BASE + 0x18, 0xCAFEBABEL)
       c.clock.step(1)
@@ -144,7 +146,7 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "系统级 memory 访问：uart tx_fifo（0x40001000）" in {
-    test(new UartSystemDemo) { c =>
+    simulate(new UartSystemDemo) { c =>
       // 原子写（word 间大端）：低 word（+0x1004）→ shadow；高 word（+0x1000）→ 提交
       c.io.wr.poke(true.B);  c.io.addr.poke(0x40001004L.U); c.io.wdata.poke(0xDEADBEEFL.U)
       c.clock.step(1); c.io.wr.poke(false.B)
@@ -165,7 +167,7 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   "系统级 AXI 包装：SystemAxiLiteRegFile 可 elaboration" in {
     val sysMap = AddressAllocator.allocateSystem(UartDemoDef.build)
     // 用 chisel3 原生 elaboration（不依赖 firtool）验证可生成
-    val chirrtl = chisel3.stage.ChiselStage.emitChirrtl(new SystemAxiLiteRegFile(sysMap))
+    val chirrtl = _root_.circt.stage.ChiselStage.emitCHIRRTL(new SystemAxiLiteRegFile(sysMap))
     assert(chirrtl.contains("SystemAxiLiteRegFile"))
     assert(chirrtl.contains("module_uart") || chirrtl.contains("module_gpio"))
   }
@@ -208,7 +210,7 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "★ Memory entry 域段：硬件访问 rx_desc（地址经分配器自动排布）" in {
-    test(new UartSystemDemo) { c =>
+    simulate(new UartSystemDemo) { c =>
       // rx_desc 基址由分配器计算（uart mem 区 tx_fifo_plain 之后，0x40001400 之前）
       val sysMap = AddressAllocator.allocateSystem(UartDemoDef.build)
       val rxDesc = sysMap.moduleByName("uart").allMems.find(_.mem.name == "rx_desc").get
@@ -238,7 +240,7 @@ class SystemRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "★ 规则 3+大端：data40 硬件访问（word 间大端：+0=高 word、+4=低 word，数据在 bit[63:24]）" in {
-    test(new UartSystemDemo) { c =>
+    simulate(new UartSystemDemo) { c =>
       val sysMap = AddressAllocator.allocateSystem(UartDemoDef.build)
       val uart = sysMap.moduleByName("uart")
       val ra = uart.allRegs.find(_.reg.name == "data40").get

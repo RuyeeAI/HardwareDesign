@@ -1,7 +1,7 @@
 package BaseCbb.async
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -11,7 +11,7 @@ import org.scalatest.matchers.should.Matchers
   * NOTE: These modules use explicit clock ports with withClockAndReset,
   * which requires Verilator backend for multi-clock simulation.
   */
-class AsyncUnitsSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class AsyncUnitsSpec extends AnyFlatSpec with Matchers {
 
   "Sync2" should "compile" in {
     assertCompiles("new Sync2(2)")

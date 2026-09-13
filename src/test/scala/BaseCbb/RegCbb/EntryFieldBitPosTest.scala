@@ -1,7 +1,7 @@
 package BaseCbb.RegCbb
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.freespec.AnyFreeSpec
 import BaseCbb.RegCbb.demo.UartDemoDef
 import BaseCbb.RegCbb.dsl._
@@ -12,7 +12,7 @@ import BaseCbb.RegCbb.hw._
  * 用 FieldReg 例化 entry 字段（来自 toEntryFields），按字段 poke hwWrData，
  * 观察整个 value 中该字段占据的 bit 位置 —— 而非整字写读（无法区分字段位）。
  */
-class EntryFieldBitPosTest extends AnyFreeSpec with ChiselScalatestTester {
+class EntryFieldBitPosTest extends AnyFreeSpec {
 
   private class EntryProbe(fields: Seq[RegFieldDef]) extends Module {
     val io = IO(new Bundle {
@@ -49,7 +49,7 @@ class EntryFieldBitPosTest extends AnyFreeSpec with ChiselScalatestTester {
     val mem = MemoryDef.fromBundle("probe", 4, fields)
     info(s"entryFieldOffsets = ${mem.entryFieldOffsets.mkString(", ")}")
 
-    test(new EntryProbe(fields)) { c =>
+    simulate(new EntryProbe(fields)) { c =>
       // 逐个字段写全 1，观察 value 中该字段占据的 bit 位置
       fields.zipWithIndex.foreach { case (f, idx) =>
         c.io.fieldEn.poke(true.B)

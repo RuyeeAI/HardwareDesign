@@ -2,7 +2,7 @@ package FPP.Parser
 
 import chisel3._
 import chisel3.util._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -17,7 +17,7 @@ import org.scalatest.matchers.should.Matchers
  * complete parse takes as many cycles as there are headers plus a couple of
  * housekeeping states.
  */
-class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class ParserCoreSpec extends AnyFlatSpec with Matchers {
 
   // ---------------------------------------------------------------- helpers
 
@@ -92,21 +92,21 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   behavior of "ParserCore elaboration"
 
   it should "elaborate with the default (unpipelined) configuration" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { _ => () }
+    simulate(new ParserCore(ParserPipelineConfig.default)) { _ => () }
   }
 
   it should "elaborate with the mildTiming configuration" in {
-    test(new ParserCore(ParserPipelineConfig.mildTiming)) { _ => () }
+    simulate(new ParserCore(ParserPipelineConfig.mildTiming)) { _ => () }
   }
 
   it should "elaborate with the aggressiveTiming configuration" in {
-    test(new ParserCore(ParserPipelineConfig.aggressiveTiming)) { _ => () }
+    simulate(new ParserCore(ParserPipelineConfig.aggressiveTiming)) { _ => () }
   }
 
   behavior of "ParserCore L2/L3/L4 parsing"
 
   it should "parse Ethernet + IPv4 + TCP and report 3 headers" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       feed(dut, pkt(ethIpTcp(6, tcpHdr())))
       val cycles = runToDone(dut)
       dut.io.parseDone.peek().litToBoolean shouldBe true
@@ -119,7 +119,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   }
 
   it should "record PHO offsets for each parsed header (Eth=0, IPv4=14, TCP=34)" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       feed(dut, pkt(ethIpTcp(6, tcpHdr())))
       runToDone(dut)
       val pho = (0 until 3).map(i => dut.io.out.bits.pho(i).peek().litValue)
@@ -130,7 +130,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   }
 
   it should "parse Ethernet + IPv4 + UDP and stop at UDP when the port is not a tunnel" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       feed(dut, pkt(ethIpTcp(17, udpHdr(53, 8))))
       runToDone(dut)
       dut.io.out.bits.valid.peek().litToBoolean shouldBe true
@@ -140,7 +140,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   }
 
   it should "detect an IPv4 version error" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       val bytes = ethIpTcp(6, tcpHdr())
       val bad = bytes.updated(14, 0x65) // version 6, ihl 5
       feed(dut, pkt(bad))
@@ -151,7 +151,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   }
 
   it should "detect a zero IPv4 TTL" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       feed(dut, pkt(ethIpTcp(6, tcpHdr(), ttl = 0)))
       runToDone(dut)
       dut.io.meta.parseError.peek().litToBoolean shouldBe true
@@ -162,7 +162,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   behavior of "ParserCore VLAN / MPLS"
 
   it should "parse a single VLAN tag before IPv4" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       val tag = Seq(0x81, 0x00, 0x00, 0x64, 0x08, 0x00) // TPID + TCI + IPv4
       val bytes = ethIpTcp(6, tcpHdr()).take(12) ++ tag ++ ethIpTcp(6, tcpHdr()).drop(14)
       feed(dut, pkt(bytes))
@@ -178,7 +178,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   }
 
   it should "parse QinQ (two VLAN tags) before IPv4" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       val tag = Seq(0x88, 0xa8, 0x00, 0x0a, 0x81, 0x00, 0x00, 0x64, 0x08, 0x00)
       val bytes = ethIpTcp(6, tcpHdr()).take(12) ++ tag ++ ethIpTcp(6, tcpHdr()).drop(14)
       feed(dut, pkt(bytes))
@@ -189,7 +189,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   }
 
   it should "parse an MPLS label stack and continue at IPv4" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       // 线序: byte0=Label[19:12] byte1=Label[11:4] byte2=Label[3:0]|TC|S byte3=TTL
       // label 100 = 0x00064 -> 00 06 40(S=0) / ttl 0x40
       // label 200 = 0x000C8 -> 00 0c 81(S=1) / ttl 0x40
@@ -210,7 +210,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   behavior of "ParserCore tunnels"
 
   it should "dispatch UDP dstPort 4789 into the VXLAN state" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       // 64-byte window: Eth(14) + IPv4(20) + UDP(8) + VXLAN(8) + inner Eth(14) = 64.
       // The inner IPv4 would start at byte 64 and is therefore all-zero -> expected error.
       val innerEth =
@@ -259,7 +259,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
          "aggressiveTiming" -> ParserPipelineConfig.aggressiveTiming
        )) {
     it should s"parse Ethernet + IPv4 + TCP identically with the $name pipeline" in {
-      test(new ParserCore(cfg)) { dut =>
+      simulate(new ParserCore(cfg)) { dut =>
         feed(dut, pkt(ethIpTcp(6, tcpHdr())))
         val (hc, pho, types, valid, err) = observe(dut)
         err shouldBe false
@@ -275,7 +275,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
     }
 
     it should s"record exactly one PHO entry per header with the $name pipeline (QinQ)" in {
-      test(new ParserCore(cfg)) { dut =>
+      simulate(new ParserCore(cfg)) { dut =>
         val tag = Seq(0x88, 0xa8, 0x00, 0x0a, 0x81, 0x00, 0x00, 0x64, 0x08, 0x00)
         val base = ethIpTcp(6, tcpHdr())
         feed(dut, pkt(base.take(12) ++ tag ++ base.drop(14)))
@@ -291,7 +291,7 @@ class ParserCoreSpec extends AnyFlatSpec with ChiselScalatestTester with Matcher
   behavior of "ParserCore readiness"
 
   it should "accept a second packet after the first completes" in {
-    test(new ParserCore(ParserPipelineConfig.default)) { dut =>
+    simulate(new ParserCore(ParserPipelineConfig.default)) { dut =>
       feed(dut, pkt(ethIpTcp(6, tcpHdr())))
       runToDone(dut)
       dut.clock.step(1)

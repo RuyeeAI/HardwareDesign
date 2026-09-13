@@ -1,7 +1,7 @@
 package FPP.OSA.OSM
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.flatspec.AnyFlatSpec
 
 /**
@@ -21,7 +21,7 @@ import org.scalatest.flatspec.AnyFlatSpec
  *   export USER_CPPFLAGS="-nostdinc++ -isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1"
  * (Or fix permanently with: sudo xcodebuild -license accept)
  */
-class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
+class OSASmokeTest extends AnyFlatSpec {
 
   private def cfg: OSAConfig = OSAConfig(bufferSizeKB = 1)  // 128 entries -> 44 x 2 rows
 
@@ -59,7 +59,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   "OSATop" should "loop a single 20-segment packet through write and read" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
 
@@ -89,7 +89,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "preserve data order across two back-to-back packets" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
 
@@ -120,7 +120,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "forward loopback data when the network has nothing to send" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)          // no network input -> rdAvail = 0 -> OSA silent
 
@@ -147,7 +147,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "drop min-size packets (tooSmall) and count them" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
 
@@ -168,7 +168,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "not alias buffer addresses across ports" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
 
@@ -208,7 +208,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "drop lossy packets above the lossyLow threshold" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       // lossyLowThr = 8 segments: after ~9 written segments a lossy packet drops
       pokeThresholds(dut, 8, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
@@ -225,7 +225,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "not drop lossless packets at the lossy threshold" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       // PriMapper default maps orgQindex 2/3 to lossless; force via LUT:
       // we keep the default linear LUT and set a VLAN PCP that maps to lossless.
       // Simpler: raise lossyLowThr above the occupancy so nothing drops.
@@ -241,7 +241,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "release per-port occupancy when a packet is read out" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
 
@@ -262,7 +262,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "keep each packet aligned to its own buffer base" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
 
@@ -304,7 +304,7 @@ class OSASmokeTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "carry portId and OBI on the first beat of a packet" in {
-    test(new OSATop(cfg)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    simulate(new OSATop(cfg)) { dut =>
       pokeThresholds(dut, 0xFFFF, 0xFFFF, 0xFFFF)
       pokeIdle(dut)
 

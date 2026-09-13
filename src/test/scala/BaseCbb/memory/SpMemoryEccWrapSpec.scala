@@ -1,7 +1,7 @@
 package BaseCbb.memory
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -9,11 +9,11 @@ import BaseCbb.memory.Memory
 import BaseCbb.memory.MemoryProtectType
 
 /** SpMemoryWrap3 test cases */
-class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class SpMemoryWrap3Spec extends AnyFlatSpec with Matchers {
 
   // Test basic write/read with no ECC/Parity protection
   "SpMemoryWrap3 with no protection" should "write and read back data correctly" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMem",
         dataType = UInt(64.W),
@@ -22,7 +22,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -54,7 +54,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test Parity protection: correct write/read
   "SpMemoryWrap3 with Parity" should "write and read correct data" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemParity",
         dataType = UInt(64.W),
@@ -63,7 +63,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -92,7 +92,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test ECC protection: correct write/read
   "SpMemoryWrap3 with ECC" should "write and read correct data" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemEcc",
         dataType = UInt(64.W),
@@ -101,7 +101,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -130,7 +130,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test memory initialization FSM
   "SpMemoryWrap3" should "complete memory initialization" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemInit",
         dataType = UInt(32.W),
@@ -139,7 +139,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -166,7 +166,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test CheckIn flopping
   "SpMemoryWrap3 with CheckIn" should "flop write signals together" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemCheckIn",
         dataType = UInt(32.W),
@@ -176,7 +176,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopOut = false,
         CheckIn = true
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
 
@@ -204,7 +204,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test eccErrAddr is 0 when no error
   "SpMemoryWrap3" should "set eccErrAddr to 0 when no error" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemErrAddr",
         dataType = UInt(32.W),
@@ -213,7 +213,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -240,7 +240,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test memory initialization clears all locations
   "SpMemoryWrap3" should "clear all memory locations after init" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemInitClear",
         dataType = UInt(32.W),
@@ -249,7 +249,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.re.poke(false.B)
@@ -287,7 +287,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test multiple back-to-back reads at different addresses
   "SpMemoryWrap3 with Parity" should "read multiple addresses correctly" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemMultiRead",
         dataType = UInt(64.W),
@@ -296,7 +296,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -333,7 +333,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test that uecErr is false for normal reads with ECC
   "SpMemoryWrap3 with ECC" should "report no uecErr on correct read" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemEccUerr",
         dataType = UInt(16.W),
@@ -342,7 +342,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -371,7 +371,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test correctable error injection with ECC
   "SpMemoryWrap3 with ECC" should "inject correctable error and report eccErr" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemInjCorr",
         dataType = UInt(32.W),
@@ -380,7 +380,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.dfx.injCorrEn.poke(false.B)
@@ -419,7 +419,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test uncorrectable error injection with ECC
   "SpMemoryWrap3 with ECC" should "inject uncorrectable error and report uecErr" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name    = "TestMemInjUerr",
         dataType = UInt(32.W),
@@ -428,7 +428,7 @@ class SpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.dfx.injCorrEn.poke(false.B)

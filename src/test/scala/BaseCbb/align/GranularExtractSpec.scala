@@ -2,12 +2,12 @@ package BaseCbb.align
 
 import chisel3._
 import chisel3.util.log2Ceil
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.util.Random
 
-class GranularExtractSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class GranularExtractSpec extends AnyFlatSpec with Matchers {
 
   // 黄金模型：out = (in >> (off*G)) 的低 M bit
   def golden(in: BigInt, off: Int, M: Int, G: Int): BigInt =
@@ -21,7 +21,7 @@ class GranularExtractSpec extends AnyFlatSpec with ChiselScalatestTester with Ma
   // ---- 1. 黄金模型回环（覆盖多种 N/M/G，均满足 G|N、G|M）----
   for ((n, m, g) <- cases) {
     s"GranularExtractAuto($n,$m,$g) matches golden model (in >> off*G)(M-1,0)" should "hold" in {
-      test(new GranularExtractAuto(n, m, g)) { dut =>
+      simulate(new GranularExtractAuto(n, m, g)) { dut =>
         val S = (n - m) / g + 1
         val rnd = new Random(42)
         for (_ <- 0 until 200) {
@@ -37,22 +37,22 @@ class GranularExtractSpec extends AnyFlatSpec with ChiselScalatestTester with Ma
 
   // ---- 2. 自动选择决策（统一用等效 mux2 计数：tree 在绝大多数参数下更小）----
   "auto selects tree(B) when S is large (512/96/8, S=53)" should "choose tree" in {
-    test(new GranularExtractAuto(512, 96, 8)) { dut => dut.chosenImpl shouldBe "tree(B)" }
+    simulate(new GranularExtractAuto(512, 96, 8)) { dut => dut.chosenImpl shouldBe "tree(B)" }
   }
   "auto selects tree(B) even at small S (64/32/8, S=5)" should "choose tree" in {
-    test(new GranularExtractAuto(64, 32, 8)) { dut => dut.chosenImpl shouldBe "tree(B)" }
+    simulate(new GranularExtractAuto(64, 32, 8)) { dut => dut.chosenImpl shouldBe "tree(B)" }
   }
   "auto selects bitmap(T2) only when S is tiny (64/32/16, S=3)" should "choose bitmap" in {
-    test(new GranularExtractAuto(64, 32, 16)) { dut => dut.chosenImpl shouldBe "bitmap(T2)" }
+    simulate(new GranularExtractAuto(64, 32, 16)) { dut => dut.chosenImpl shouldBe "bitmap(T2)" }
   }
   "prefer=tree forces tree, prefer=bitmap forces bitmap" should "override auto" in {
-    test(new GranularExtractAuto(64, 32, 8, prefer = "tree")) { dut => dut.chosenImpl shouldBe "tree(B)" }
-    test(new GranularExtractAuto(512, 96, 8, prefer = "bitmap")) { dut => dut.chosenImpl shouldBe "bitmap(T2)" }
+    simulate(new GranularExtractAuto(64, 32, 8, prefer = "tree")) { dut => dut.chosenImpl shouldBe "tree(B)" }
+    simulate(new GranularExtractAuto(512, 96, 8, prefer = "bitmap")) { dut => dut.chosenImpl shouldBe "bitmap(T2)" }
   }
 
   // ---- 3. 两种实现输出完全一致 ----
   "tree and bitmap produce identical output (512/96/8)" should "match" in {
-    test(new ExtractCmpHarness(512, 96, 8)) { dut =>
+    simulate(new ExtractCmpHarness(512, 96, 8)) { dut =>
       val rnd = new Random(7)
       for (_ <- 0 until 300) {
         val in = BigInt(512, rnd)
@@ -63,7 +63,7 @@ class GranularExtractSpec extends AnyFlatSpec with ChiselScalatestTester with Ma
     }
   }
   "tree and bitmap produce identical output (64/32/8)" should "match" in {
-    test(new ExtractCmpHarness(64, 32, 8)) { dut =>
+    simulate(new ExtractCmpHarness(64, 32, 8)) { dut =>
       val rnd = new Random(7)
       for (_ <- 0 until 200) {
         val in = BigInt(64, rnd)
@@ -76,7 +76,7 @@ class GranularExtractSpec extends AnyFlatSpec with ChiselScalatestTester with Ma
 
   // ---- 4. sideband（per-chunk 1 位标志）随同一网络移位 ----
   "sideband follows the same shift network (256/64/32, n=8, m=2)" should "align" in {
-    test(new GranularExtractAuto(256, 64, 32)) { dut =>
+    simulate(new GranularExtractAuto(256, 64, 32)) { dut =>
       val rnd = new Random(11)
       for (_ <- 0 until 200) {
         val in = BigInt(256, rnd)

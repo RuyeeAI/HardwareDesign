@@ -1,12 +1,12 @@
 package BaseCbb.fifo
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class SyncFifosSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class SyncFifosSpec extends AnyFlatSpec with Matchers {
 
   "DualSPRamFifo" should "compile with default parameters" in {
     assertCompiles("new DualSPRamFifo()")

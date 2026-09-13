@@ -2,15 +2,15 @@ package BaseCbb.utils
 import BaseCbb.math.{Crc, Icrc}
 import BaseCbb.utils.timer._
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class CrcSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class CrcSpec extends AnyFlatSpec with Matchers {
 
   "Crc-32" should "compute known MSB-first CRC" in {
-    test(new Crc(32, 0x04C11DB7L)) { c =>
+    simulate(new Crc(32, 0x04C11DB7L)) { c =>
       // MSB-first CRC-32 of single byte 0x00 with init=all-ones
       c.io.data.poke(0x00.U)
       c.io.valid.poke(true.B)
@@ -22,7 +22,7 @@ class CrcSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Crc-32" should "accumulate multiple bytes" in {
-    test(new Crc(32, 0x04C11DB7L)) { c =>
+    simulate(new Crc(32, 0x04C11DB7L)) { c =>
       // Byte 0: 0x00
       c.io.data.poke(0x00.U)
       c.io.valid.poke(true.B)
@@ -37,7 +37,7 @@ class CrcSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Crc-32" should "produce constant for zero data" in {
-    test(new Crc(32, 0x04C11DB7L)) { c =>
+    simulate(new Crc(32, 0x04C11DB7L)) { c =>
       c.io.data.poke(0x00.U)
       c.io.valid.poke(true.B)
       c.io.first.poke(true.B)
@@ -49,7 +49,7 @@ class CrcSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Crc-16" should "compute known values" in {
-    test(new Crc(16, 0x8005L)) { c =>
+    simulate(new Crc(16, 0x8005L)) { c =>
       // CRC-16 of 0x00 with init=0
       c.io.data.poke(0x00.U)
       c.io.valid.poke(true.B)
@@ -62,7 +62,7 @@ class CrcSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Crc-8" should "compute known values" in {
-    test(new Crc(8, 0x07L)) { c =>
+    simulate(new Crc(8, 0x07L)) { c =>
       // CRC-8 of 0x00 with init=0
       c.io.data.poke(0x00.U)
       c.io.valid.poke(true.B)
@@ -74,7 +74,7 @@ class CrcSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Crc-32" should "produce different CRC for different data" in {
-    test(new Crc(32, 0x04C11DB7L)) { c =>
+    simulate(new Crc(32, 0x04C11DB7L)) { c =>
       c.io.valid.poke(true.B)
       c.io.first.poke(true.B)
       c.io.init.poke("hFFFFFFFF".U)
@@ -93,7 +93,7 @@ class CrcSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Icrc" should "compute remainder after feeding back CRC" in {
-    test(new Icrc(32, 0x04C11DB7L)) { c =>
+    simulate(new Icrc(32, 0x04C11DB7L)) { c =>
       // Feed data byte 0x00
       c.io.data.poke(0x00.U)
       c.io.valid.poke(true.B)

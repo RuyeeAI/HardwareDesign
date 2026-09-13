@@ -5,7 +5,7 @@ package BaseCbb.data
 import chisel3._
 import scala.collection.immutable.ListMap
 import chisel3.internal.requireIsChiselType
-import chisel3.experimental.DataMirror.internal.chiselTypeClone
+import chisel3.reflect.DataMirror.internal.chiselTypeClone
 
 final class RecordMap[T <: Data] (eltMap: ListMap[String, T])
     extends Record {

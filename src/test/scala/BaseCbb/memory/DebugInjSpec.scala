@@ -1,18 +1,18 @@
 package BaseCbb.memory
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import BaseCbb.memory.Memory
 import BaseCbb.memory.MemoryProtectType
 
-class DebugInjSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class DebugInjSpec extends AnyFlatSpec with Matchers {
   "Debug" should "basic read works with injCorrEn=0" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(name="D1", dataType=UInt(32.W), depth=64, protect=MemoryProtectType.ECC, flopIn=false, flopOut=false)
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.dfx.injCorrEn.poke(false.B)

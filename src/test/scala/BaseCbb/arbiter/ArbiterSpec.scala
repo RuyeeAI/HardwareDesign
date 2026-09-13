@@ -2,12 +2,12 @@ package BaseCbb.arbiter
 
 import BaseCbb._
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class ArbiterSpec extends AnyFlatSpec with Matchers {
 
   /** Check that grant is one-hot and is a subset of ready */
   private def isOneHot(grant: BigInt, ready: BigInt): Boolean = {
@@ -17,7 +17,8 @@ class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   // ---- RR (Round-Robin Arbiter) ----
 
   "RR" should "grant a one-hot subset of ready" in {
-    test(new RR(4)) { c =>
+    simulate(new RR(4)) { c =>
+      SimReset(c)
       c.io.ready.poke("b0010".U)
       c.io.enable.poke(true.B)
       c.clock.step(1)
@@ -27,7 +28,7 @@ class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "RR" should "grant zero when no requests" in {
-    test(new RR(4)) { c =>
+    simulate(new RR(4)) { c =>
       c.io.ready.poke(0.U)
       c.io.enable.poke(true.B)
       c.clock.step(1)
@@ -36,7 +37,8 @@ class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "RR" should "rotate grant among requesters" in {
-    test(new RR(4)) { c =>
+    simulate(new RR(4)) { c =>
+      SimReset(c)
       c.io.enable.poke(true.B)
       c.io.ready.poke("b1111".U)
 
@@ -57,7 +59,8 @@ class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "RR" should "skip absent requesters" in {
-    test(new RR(4)) { c =>
+    simulate(new RR(4)) { c =>
+      SimReset(c)
       c.io.enable.poke(true.B)
       c.io.ready.poke("b1010".U) // only clients 1 and 3 ready
 
@@ -71,7 +74,7 @@ class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "RR" should "hold grant when enable=0" in {
-    test(new RR(4)) { c =>
+    simulate(new RR(4)) { c =>
       c.io.enable.poke(true.B)
       c.io.ready.poke("b1111".U)
       c.clock.step(1)
@@ -87,7 +90,8 @@ class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   // ---- WRR (Weighted Round-Robin) ----
 
   "WRR" should "grant only ready clients" in {
-    test(new WRR(2, 4)) { c =>
+    simulate(new WRR(2, 4)) { c =>
+      SimReset(c)
       c.io.enable.poke(true.B)
       c.io.weight(0).poke(3.U)
       c.io.weight(1).poke(3.U)
@@ -102,7 +106,8 @@ class ArbiterSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "WRR" should "reload weights when all requests consumed" in {
-    test(new WRR(2, 4)) { c =>
+    simulate(new WRR(2, 4)) { c =>
+      SimReset(c)
       c.io.enable.poke(true.B)
       c.io.weight(0).poke(1.U)
       c.io.weight(1).poke(1.U)

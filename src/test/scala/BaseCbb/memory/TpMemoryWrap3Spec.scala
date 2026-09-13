@@ -1,8 +1,7 @@
 package BaseCbb.memory
 
 import chisel3._
-import chiseltest._
-import chiseltest.simulator.WriteVcdAnnotation
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -10,11 +9,11 @@ import BaseCbb.memory.Memory
 import BaseCbb.memory.MemoryProtectType
 
 /** TpMemoryWrap3 test cases */
-class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class TpMemoryWrap3Spec extends AnyFlatSpec with Matchers {
 
   // Test basic write/read with no ECC/Parity protection
   "TpMemoryWrap3 with no protection" should "write and read back data correctly" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMem",
         dataType = UInt(64.W),
@@ -23,7 +22,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -55,7 +54,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test Parity protection: correct write/read
   "TpMemoryWrap3 with Parity" should "write and read correct data" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemParity",
         dataType = UInt(64.W),
@@ -64,7 +63,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -92,7 +91,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test ECC protection: correct write/read
   "TpMemoryWrap3 with ECC" should "write and read correct data" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemEcc",
         dataType = UInt(64.W),
@@ -101,7 +100,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -129,7 +128,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test memory initialization FSM
   "TpMemoryWrap3" should "complete memory initialization" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemInit",
         dataType = UInt(32.W),
@@ -138,7 +137,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -165,7 +164,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test CheckIn flopping
   "TpMemoryWrap3 with CheckIn" should "flop write signals together" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemCheckIn",
         dataType = UInt(32.W),
@@ -175,7 +174,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopOut = false,
         CheckIn = true
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
 
@@ -203,7 +202,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test eccErrAddr is 0 when no error
   "TpMemoryWrap3" should "set eccErrAddr to 0 when no error" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemErrAddr",
         dataType = UInt(32.W),
@@ -212,7 +211,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -239,7 +238,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test memory initialization clears all locations
   "TpMemoryWrap3" should "clear all memory locations after init" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemInitClear",
         dataType = UInt(32.W),
@@ -248,7 +247,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.re.poke(false.B)
@@ -286,7 +285,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test multiple back-to-back reads at different addresses
   "TpMemoryWrap3 with Parity" should "read multiple addresses correctly" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemMultiRead",
         dataType = UInt(64.W),
@@ -295,7 +294,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -332,7 +331,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test that DFX reports no ECC error on correct reads
   "TpMemoryWrap3 with ECC" should "report no ECC error on correct read" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemEccUerr",
         dataType = UInt(16.W),
@@ -341,7 +340,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)
@@ -369,7 +368,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test correctable error injection with ECC
   "TpMemoryWrap3 with ECC" should "inject correctable error and report eccErr" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemInjCorr",
         dataType = UInt(32.W),
@@ -378,7 +377,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.dfx.injCorrEn.poke(false.B)
@@ -416,7 +415,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test uncorrectable error injection with ECC
   "TpMemoryWrap3 with ECC" should "inject uncorrectable error and report uecErr" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemInjUerr",
         dataType = UInt(32.W),
@@ -425,7 +424,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.dfx.injCorrEn.poke(false.B)
@@ -461,7 +460,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
 
   // Test independent read/write ports — write to one address, read another
   "TpMemoryWrap3" should "support independent read and write ports" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name    = "TestMemDualPort",
         dataType = UInt(32.W),
@@ -470,7 +469,7 @@ class TpMemoryWrap3Spec extends AnyFlatSpec with ChiselScalatestTester with Matc
         flopIn  = false,
         flopOut = false
       )
-    )).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B)

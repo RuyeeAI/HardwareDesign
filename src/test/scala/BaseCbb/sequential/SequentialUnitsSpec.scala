@@ -1,7 +1,7 @@
 package BaseCbb.sequential
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -16,12 +16,12 @@ import org.scalatest.matchers.should.Matchers
   *
   * To run these tests, use Verilator:
   * {{{
-  * test(new Register(8)).withAnnotations(Seq(VerilatorBackendAnnotation)) { c => ... }
+  * simulate(new Register(8)) { c => ... }
   * }}}
   *
   * Leaving placeholder tests here to document expected behavior.
   */
-class SequentialUnitsSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class SequentialUnitsSpec extends AnyFlatSpec with Matchers {
 
   // Placeholder: all sequential modules require Verilator backend for multi-clock support.
   // The modules are designed correctly but Treadle cannot simulate explicit clock ports.

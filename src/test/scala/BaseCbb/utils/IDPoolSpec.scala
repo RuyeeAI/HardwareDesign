@@ -2,15 +2,15 @@ package BaseCbb.utils
 import BaseCbb.memory.IDPool
 import BaseCbb.utils.timer._
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class IDPoolSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class IDPoolSpec extends AnyFlatSpec with Matchers {
 
   "IDPool" should "allocate and free IDs" in {
-    test(new IDPool(4)) { c =>
+    simulate(new IDPool(4)) { c =>
       // Initially should be valid
       c.io.alloc.ready.poke(true.B)
       c.clock.step(1)

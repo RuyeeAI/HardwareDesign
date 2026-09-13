@@ -2,15 +2,15 @@ package BaseCbb.utils
 import BaseCbb.math.Checksum
 import BaseCbb.utils.timer._
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class ChecksumSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class ChecksumSpec extends AnyFlatSpec with Matchers {
 
   "Checksum" should "compute RFC 1071 zero checksum" in {
-    test(new Checksum(16)) { c =>
+    simulate(new Checksum(16)) { c =>
       // Single zero word: sum=0, ~sum=0xFFFF
       c.io.data.poke(0.U)
       c.io.valid.poke(true.B)
@@ -22,7 +22,7 @@ class ChecksumSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Checksum" should "compute single word checksum" in {
-    test(new Checksum(16)) { c =>
+    simulate(new Checksum(16)) { c =>
       c.io.data.poke("h1234".U)
       c.io.valid.poke(true.B)
       c.io.first.poke(true.B)
@@ -34,7 +34,7 @@ class ChecksumSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Checksum" should "accumulate multiple words" in {
-    test(new Checksum(16)) { c =>
+    simulate(new Checksum(16)) { c =>
       // Word 1: 0x1234
       c.io.data.poke("h1234".U)
       c.io.valid.poke(true.B)
@@ -54,7 +54,7 @@ class ChecksumSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Checksum" should "handle carry wrap-around" in {
-    test(new Checksum(16)) { c =>
+    simulate(new Checksum(16)) { c =>
       // 0xFFFF + 0x0001 = 0x10000 -> wrap: 0x0000 + 1 = 0x0001
       c.io.data.poke("hFFFF".U)
       c.io.valid.poke(true.B)
@@ -71,7 +71,7 @@ class ChecksumSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Checksum" should "reject input when not valid" in {
-    test(new Checksum(16)) { c =>
+    simulate(new Checksum(16)) { c =>
       c.io.data.poke("hABCD".U)
       c.io.valid.poke(false.B)
       c.io.first.poke(true.B)
@@ -83,7 +83,7 @@ class ChecksumSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers 
   }
 
   "Checksum" should "reset on first" in {
-    test(new Checksum(16)) { c =>
+    simulate(new Checksum(16)) { c =>
       // First packet: 0x1111
       c.io.data.poke("h1111".U)
       c.io.valid.poke(true.B)

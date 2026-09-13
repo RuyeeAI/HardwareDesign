@@ -2,15 +2,15 @@ package BaseCbb.utils
 import BaseCbb.utils.timer._
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class ShaperSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class ShaperSpec extends AnyFlatSpec with Matchers {
 
   "Shaper" should "pass when enough tokens" in {
-    test(new Shaper(16)) { c =>
+    simulate(new Shaper(16)) { c =>
       c.io.rate.poke(10.U)
       c.io.burstSize.poke(100.U)
       c.io.interval.poke(10.U)
@@ -23,7 +23,7 @@ class ShaperSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Shaper" should "block when not enough tokens" in {
-    test(new Shaper(16)) { c =>
+    simulate(new Shaper(16)) { c =>
       c.io.rate.poke(0.U)
       c.io.burstSize.poke(5.U)
       c.io.interval.poke(10.U)
@@ -36,7 +36,7 @@ class ShaperSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Shaper" should "consume tokens on pass" in {
-    test(new Shaper(16)) { c =>
+    simulate(new Shaper(16)) { c =>
       c.io.rate.poke(50.U)
       c.io.burstSize.poke(100.U)
       c.io.interval.poke(1.U)
@@ -57,7 +57,7 @@ class ShaperSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Shaper" should "respect burst size limit" in {
-    test(new Shaper(16)) { c =>
+    simulate(new Shaper(16)) { c =>
       c.io.rate.poke(100.U)
       c.io.burstSize.poke(10.U)
       c.io.interval.poke(1.U)
@@ -71,7 +71,7 @@ class ShaperSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
   }
 
   "Shaper" should "not pass with zero tokens" in {
-    test(new Shaper(16)) { c =>
+    simulate(new Shaper(16)) { c =>
       c.io.rate.poke(0.U)
       c.io.burstSize.poke(10.U)
       c.io.interval.poke(10.U)

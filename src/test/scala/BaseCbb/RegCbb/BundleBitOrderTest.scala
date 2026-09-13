@@ -1,7 +1,7 @@
 package BaseCbb.RegCbb
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.freespec.AnyFreeSpec
 import BaseCbb.RegCbb.demo.UartDemoDef
 import BaseCbb.RegCbb.dsl._
@@ -12,7 +12,7 @@ import BaseCbb.RegCbb.hw._
  *  - bundle_ctrl：声明 mode(2) 先、burst(1) 后 → 期望 mode[1:0] LSB、burst[2] MSB
  *  - FifoDescEntry（memory entry）：声明 tag(8) 先 → 期望 tag[7:0] LSB
  */
-class BundleBitOrderTest extends AnyFreeSpec with ChiselScalatestTester {
+class BundleBitOrderTest extends AnyFreeSpec {
 
   /** 用 FieldReg 例化单寄存器，poke 全 1 后检查各字段位位置 */
   private def fieldPositions(fields: Seq[RegFieldDef], totalBits: Int): Map[String, Int] = {
@@ -52,7 +52,7 @@ class BundleBitOrderTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "FieldReg 硬件仿真：写值后各字段读回位位置正确" in {
-    test(new Module {
+    simulate(new Module {
       val io = IO(new Bundle {
         val wr = Input(Bool()); val wdata = Input(UInt(32.W)); val rd = Input(Bool())
         val rdata = Output(UInt(32.W)); val value = Output(UInt(32.W))

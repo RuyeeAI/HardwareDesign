@@ -2,11 +2,12 @@ package BaseCbb.RegCbb
 
 import chisel3._
 import chisel3.util.{RegEnable, ShiftRegister}
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.freespec.AnyFreeSpec
 import BaseCbb.RegCbb.demo.UartDemo
 import BaseCbb.RegCbb.demo.UartDemoDef
 import BaseCbb.RegCbb.hw._
+import BaseCbb.SimReset
 
 /**
  * UartDemo 总线侧冒烟测试：
@@ -17,7 +18,7 @@ import BaseCbb.RegCbb.hw._
  *  - 64bit 原子/非原子寄存器
  *  - memory 地址空间（64bit 原子访问、延迟 ack 等待、status 错误）
  */
-class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
+class UartRegTest extends AnyFreeSpec {
 
   private val BASE = 0x40000000L
 
@@ -52,7 +53,8 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "RW scratch 写读回与复位值" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
+      SimReset(c)
       // 复位值 0xDEADBEEF
       assert(read(c, BASE + 0x18) == 0xDEADBEEFL)
       write(c, BASE + 0x18, 0x12345678L)
@@ -61,7 +63,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "RO 寄存器读回（v1 bug 修复验证）" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       // rx_data_ro 由用户逻辑驱动为 0x5A
       assert(read(c, BASE + 0x0C) == 0x5A)
       // status_ro：复位后 tx_busy=0, tx_done=0
@@ -72,7 +74,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "WO 寄存器读回 0 且写触发发送" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       assert(read(c, BASE + 0x08) == 0) // 写前读回 0
       write(c, BASE + 0x08, 0xAB)
       c.clock.step(1)
@@ -84,7 +86,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "W1C 硬件置位 + 软件写1清除" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       assert(read(c, BASE + 0x10) == 0)
       // 触发发送（baud_div=4 → 每 5 拍 1 bit，10 bit 帧）
       write(c, BASE + 0x08, 0x55)
@@ -98,7 +100,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "64bit 原子寄存器（word 间大端：低地址=高有效 word，写 +0x1C 提交）" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       // data64 @ 0x1c（word0 = 最高有效 word = bit[63:32]）/ 0x20（word1 = 低 word = bit[31:0]）
       // word 间大端：低地址存高有效 word；原子提交 = 写最高有效 word（+0x1C）
       assert(read(c, BASE + 0x1C) == 0)
@@ -112,7 +114,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "64bit 非原子寄存器（word 间大端：+0x24=高 word，+0x28=低 word）" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       // data64_plain @ 0x24（word0 = 高 word = bit[63:32]）/ 0x28（word1 = 低 word = bit[31:0]）
       write(c, BASE + 0x24, 0xBBBBBBBBL)   // 写高 word（bit[63:32]）
       assert(read(c, BASE + 0x24) == 0xBBBBBBBBL) // 高 word 立即生效
@@ -123,7 +125,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "memory 64bit 原子访问（word 间大端：+0x1000=高 word，写 +0x1000 提交）" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       // tx_fifo @ 0x40001000（word0=高 word=bit[63:32]）/ 0x40001004（word1=低 word=bit[31:0]）
       assert(readMem(c, 0x40001000L) == 0)
       write(c, 0x40001004L, 0xDEADBEEFL)  // 写低 word（bit[31:0]）：进 shadow，SRAM 未变
@@ -135,7 +137,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "memory 非原子多字写（word 间大端：读-改-写）" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       // tx_fifo_plain @ 0x40001200（word0=高 word）/ 0x40001204（word1=低 word），非原子 → 内部 RMW
       c.io.wr.poke(true.B);  c.io.addr.poke(0x40001200L.U); c.io.wdata.poke(0xA5A5A5A5L.U)
       c.clock.step(3); c.io.wr.poke(false.B)   // RMW：读请求→ack→合并写回→ack
@@ -149,7 +151,7 @@ class UartRegTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "RegBundle（GenBundle 风格）寄存器" in {
-    test(new UartDemo) { c =>
+    simulate(new UartDemo) { c =>
       // bundle 寄存器地址从分配器动态获取（避免硬编码偏移随布局漂移）
       val sysMap = AddressAllocator.allocateSystem(UartDemoDef.build)
       val uart = sysMap.moduleByName("uart")
@@ -221,10 +223,10 @@ class MemRespDemo(memAckDelay: Int = 0, memStatus: Int = 0) extends Module {
   pWide.status := MemStatus.OK
 }
 
-class MemProtocolTest extends AnyFreeSpec with ChiselScalatestTester {
+class MemProtocolTest extends AnyFreeSpec {
 
   "memory 延迟 ack 响应（等待用户侧逻辑带宽）" in {
-    test(new MemRespDemo(memAckDelay = 2)) { c =>
+    simulate(new MemRespDemo(memAckDelay = 2)) { c =>
       // 原子写（word 间大端）：低 word（+0x1004，shadow，立即）+ 高 word（+0x1000，提交，wr 等待 ack 2 拍）
       c.io.wr.poke(true.B);  c.io.addr.poke(0x40001004L.U); c.io.wdata.poke(0xDEADBEEFL.U)
       c.clock.step(1); c.io.wr.poke(false.B)
@@ -251,7 +253,7 @@ class MemProtocolTest extends AnyFreeSpec with ChiselScalatestTester {
   }
 
   "memory status 编码：非OK（010 不可纠正错误）→ 数据无效" in {
-    test(new MemRespDemo(memStatus = 2)) { c =>
+    simulate(new MemRespDemo(memStatus = 2)) { c =>
       // 写入（写路径不受 status 影响；word 间大端：+0x1004=低 word，+0x1000=高 word 提交）
       c.io.wr.poke(true.B);  c.io.addr.poke(0x40001004L.U); c.io.wdata.poke(0x11111111L.U)
       c.clock.step(1); c.io.wr.poke(false.B)

@@ -1,7 +1,7 @@
 package BaseCbb.memory
 
 import chisel3._
-import chiseltest._
+import chisel3.simulator.EphemeralSimulator._
 import org.scalatest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -9,20 +9,20 @@ import BaseCbb.memory.Memory
 import BaseCbb.memory.MemoryProtectType
 
 /** CPU access (RsAccess) test cases for SpMemoryWrap3 and TpMemoryWrap3 */
-class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers {
+class MemoryCpuSpec extends AnyFlatSpec with Matchers {
 
   // ===========================================================================
   // SpMemoryWrap3 CPU access tests
   // ===========================================================================
 
   "SpMemoryWrap3 with RsAccess" should "CPU read when user idle returns correct data and ACK" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name = "SpCpuRd", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 32
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B); c.io.lgc.re.poke(false.B)
@@ -49,13 +49,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "SpMemoryWrap3 with RsAccess" should "CPU write when user idle succeeds and returns ACK" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name = "SpCpuWr", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 32
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B); c.io.lgc.re.poke(false.B)
@@ -78,13 +78,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "SpMemoryWrap3 with RsAccess" should "CPU read blocked by user read but NOT by user write" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name = "SpCpuSep", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 32
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -110,13 +110,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "SpMemoryWrap3 with RsAccess" should "CPU read blocked by user read waits and then succeeds" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name = "SpCpuBlk", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 128
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -144,13 +144,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "SpMemoryWrap3 with RsAccess" should "timeout when user never yields and return status=3" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name = "SpCpuTO", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 8
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -176,13 +176,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "SpMemoryWrap3 with RsAccess" should "assert backpressure after idleCycleTh0" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name = "SpCpuBP", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 128
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -207,13 +207,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "SpMemoryWrap3 with RsAccess" should "CPU read with ECC protection returns no error on clean read" in {
-    test(new SpMemoryWrap3(
+    simulate(new SpMemoryWrap3(
       Memory(
         name = "SpCpuEcc", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ECC, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 128
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.dfx.injCorrEn.poke(false.B); c.io.dfx.injUerrEn.poke(false.B)
@@ -239,13 +239,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   // ===========================================================================
 
   "TpMemoryWrap3 with RsAccess" should "CPU read when user idle returns correct data and ACK" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name = "TpCpuRd", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 32
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B); c.io.lgc.re.poke(false.B)
@@ -268,13 +268,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "TpMemoryWrap3 with RsAccess" should "CPU write when user idle succeeds and returns ACK" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name = "TpCpuWr", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 32
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.io.lgc.we.poke(false.B); c.io.lgc.re.poke(false.B)
@@ -297,13 +297,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "TpMemoryWrap3 with RsAccess" should "CPU read not blocked by user write (separate ports)" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name = "TpCpuSep1", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 128
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -328,13 +328,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "TpMemoryWrap3 with RsAccess" should "CPU write not blocked by user read (separate ports)" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name = "TpCpuSep2", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 128
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -359,13 +359,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "TpMemoryWrap3 with RsAccess" should "CPU read blocked by user read waits and then succeeds" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name = "TpCpuBlk", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 128
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -393,13 +393,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "TpMemoryWrap3 with RsAccess" should "timeout and return status=3 when blocked too long" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name = "TpCpuTO", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 8
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)
@@ -421,13 +421,13 @@ class MemoryCpuSpec extends AnyFlatSpec with ChiselScalatestTester with Matchers
   }
 
   "TpMemoryWrap3 with RsAccess" should "assert backpressure after idleCycleTh0" in {
-    test(new TpMemoryWrap3(
+    simulate(new TpMemoryWrap3(
       Memory(
         name = "TpCpuBP", dataType = UInt(32.W), depth = 64,
         protect = MemoryProtectType.ProtNone, flopIn = false, flopOut = false,
         RsAccess = true, RsMemoryDisLat = 128
       )
-    )).withAnnotations(Seq()) { c =>
+    )) { c =>
       c.reset.poke(false.B)
       c.io.dfx.init.poke(false.B)
       c.clock.step(2)

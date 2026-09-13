@@ -184,14 +184,14 @@ object ProtocolType {
 
 // EtherType values (for reference)
 object EtherType {
-  val IPv4 = 0x0800.U(16.W)
-  val IPv6 = 0x86DD.U(16.W)
-  val ARP = 0x0806.U(16.W)
-  val VLAN = 0x8100.U(16.W)
-  val VLAN911 = 0x88a8.U(16.W)  // 802.1ad (QinQ)
-  val MPLS = 0x8847.U(16.W)
-  val MPLS_UNI = 0x8848.U(16.W)
-  val LLDP = 0x88CC.U(16.W)
-  val Ethernet = 0x6558.U(16.W) // Internal use -Ethernet II without length/type
+  val IPv4      = 0x0800.U(16.W)
+  val IPv6      = 0x86DD.U(16.W)
+  val ARP       = 0x0806.U(16.W)
+  val VLAN      = 0x8100.U(16.W)
+  val VLAN911   = 0x88a8.U(16.W)  // 802.1ad (QinQ)
+  val MPLS      = 0x8847.U(16.W)
+  val MPLS_UNI  = 0x8848.U(16.W)
+  val LLDP      = 0x88CC.U(16.W)
+  val Ethernet  = 0x6558.U(16.W) // Internal use -Ethernet II without length/type
 }
 
