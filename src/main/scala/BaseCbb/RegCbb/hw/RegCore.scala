@@ -381,6 +381,10 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
     val addr = Input(UInt(addrWidth.W))
     val wdata = Input(UInt(dataWidth.W))
     val rdata = Output(UInt(dataWidth.W))
+    /** 读数据有效：寄存器读当拍有效；memory 读自 ack 拍起保持到下一次访问发起 */
+    val rvalid = Output(Bool())
+    /** 任一 memory 访问状态机非 idle（包装器用于反压 aw/w/ar ready） */
+    val busy   = Output(Bool())
     val user = new RegUserRecord(map)
     val memPorts = new MemPortRecord(map.mems)
   })
@@ -418,7 +422,8 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
   private val memHits: Seq[Bool] = map.mems.map { ma =>
     io.addr >= ma.baseAddress.U(addrWidth.W) && io.addr < (ma.baseAddress + ma.mem.byteSize).U(addrWidth.W)
   }
-  private val memRdata: Seq[UInt] = map.mems.zip(memHits).map { case (ma, hit) =>
+  // (读数据, 读数据有效, 存储器忙) —— 每片 memory 一个访问状态机
+  private val memResp: Seq[(UInt, Bool, Bool)] = map.mems.zip(memHits).map { case (ma, hit) =>
     val mem = ma.mem
     val eW = mem.expandedDataWidth          // 占据位宽（2 的幂，规则 3）
     val port = io.memPorts.elements(mem.name).asInstanceOf[MemPortIO]
@@ -509,13 +514,17 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
     port.waddr := memUnit
     port.wdata := memWdata
 
-    // 读响应：总线读请求的 ack 拍（state==stRdWait）采样；
-    // status 非 MemStatus.OK 表示数据无效 → 总线读回 0
+    // 读响应：**ack 拍单拍脉冲**（respValid），数据当拍有效（status 非 OK → 读 0）。
+    // 修复说明：原实现 respRegWord 计算后悬空未接，memory 读数据仅在 ack 拍有效，
+    // AXI 包装器却按 "ar+1 拍" 锁存 → 锁到陈旧数据。现由包装器在本脉冲拍采样。
     val respData = Mux(port.status === MemStatus.OK, port.rdata, 0.U(eW.W))
     val respWord = (respData >> (memWord << log2Ceil(dataWidth)))(dataWidth - 1, 0)
-    val respRegWord = RegEnable(respWord, port.ack && (memState === stRdWait))
-    Mux(port.ack && (memState === stRdWait), respWord, respRegWord)
+    val respValid = memState === stRdWait && port.ack
+    (respWord, respValid, memState =/= stIdle)
   }
+  private val memRdata: Seq[UInt] = memResp.map(_._1)
+  private val memRespValid: Seq[Bool] = memResp.map(_._2)
+  private val memBusy: Seq[Bool] = memResp.map(_._3)
 
   private def patch(st: UInt, lo: Int, hi: Int, v: UInt, width: Int): UInt = {
     val mask = ((BigInt(1) << (hi - lo + 1)) - 1) << lo
@@ -523,4 +532,11 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
   }
 
   io.rdata := MuxCase(0.U(dataWidth.W), regHits.zip(regRdata) ++ memHits.zip(memRdata))
+
+  // 读有效：寄存器读/未命中 → io.rd 当拍有效（rdata 组合）；
+  // memory 读 → 该存储器 respValid（ack 拍起保持）。未命中任何空间读 0 且立即有效。
+  private val rdMemHit = io.rd && memHits.foldLeft(false.B)(_ || _)
+  io.rvalid := (io.rd && !rdMemHit) ||
+    memRespValid.zip(memHits).map { case (v, h) => v && h }.foldLeft(false.B)(_ || _)
+  io.busy := memBusy.foldLeft(false.B)(_ || _)
 }

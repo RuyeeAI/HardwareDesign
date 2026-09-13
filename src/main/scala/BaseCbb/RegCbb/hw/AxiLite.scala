@@ -64,7 +64,9 @@ class AxiLiteRegFile(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) 
 
   inner.io.wr := wHand
   inner.io.rd := arHand
-  inner.io.addr := Mux(arHand, io.axi.ar_addr, wrAddrReg)
+  // 修复：AW 与 W 同拍握手时，旧实现用的是上一笔的 wrAddrReg（写错地址）。
+  // 读路径同理用 arHand 当拍的 ar_addr。
+  inner.io.addr := Mux(arHand, io.axi.ar_addr, Mux(awHand, io.axi.aw_addr, wrAddrReg))
   inner.io.wdata := io.axi.w_data
 
   // 写响应
@@ -74,18 +76,20 @@ class AxiLiteRegFile(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) 
   when(bValid && bHand) { bValid := false.B }
   when(wHand) { bValid := true.B }
 
-  // 读数据：内层 rdata 为组合（寄存器）或请求-响应结果（memory，ack 拍更新），每拍锁存
+  // 读数据：由内层 rvalid 指示采样点（寄存器读 = rd 当拍；memory 读 = ack 拍起保持），
+  // 修复：旧实现 ar 后固定 1 拍即置 r_valid，memory 读（请求-响应）锁到的是陈旧数据。
   private val rValid = RegInit(false.B)
-  private val rDataReg = RegNext(inner.io.rdata)
+  private val rDataReg = RegEnable(inner.io.rdata, inner.io.rvalid)
   io.axi.r_valid := rValid
   io.axi.r_data  := rDataReg
   io.axi.r_resp  := AxiResp.OKAY
   when(rValid && rHand) { rValid := false.B }
-  when(arHand) { rValid := true.B }
+  when(inner.io.rvalid) { rValid := true.B }
 
-  io.axi.aw_ready := true.B
-  io.axi.w_ready  := true.B
-  io.axi.ar_ready := true.B
+  // memory 访问状态机忙时不接收新请求（单笔在途；请求-响应期间新请求会被内层丢弃）
+  io.axi.aw_ready := !inner.io.busy
+  io.axi.w_ready  := !inner.io.busy
+  io.axi.ar_ready := !inner.io.busy && !rValid
 
   map.regs.foreach { a =>
     val name = a.reg.name

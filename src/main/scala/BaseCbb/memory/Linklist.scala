@@ -134,6 +134,15 @@ class VoqLinkList(QueueNum:Int,RamLat:Int,RscNum:Int,PtrW:Int) extends GenModule
    * per destination queue, it need 4 headers & 4 tails, assume each header and tail us 6 bits
    * total need: 6b*8(H&T)*48(dest num per control point) = 2304b
    * it might need prefetch logic later to resolve the timing issue.
+   *
+   * 索引约定（2026-09-13 修复）：子链表 i = q*RamLat + lane，
+   *   队列 q = i / RamLat，lane = i % RamLat。
+   * 每个队列把第 n 次访问轮转到自己的第 n%RamLat 个子链表（lane），
+   * 从而把连续访存分散开、隐藏共享 RAM 的读延迟（SubLinklist 内 ShiftRegister(re, RamLat)）。
+   *
+   * 修复前的问题：enq 路由缺 qid 匹配（一次入队会打到所有队列的同一 lane）；
+   * deq/deqSel/enqSel 用 floor(i/QueueNum) 与 i%RamLat/i%QueueNum 混排，
+   * 仅 QueueNum==RamLat 时碰巧正确；enq/deq_seq 计数器模数误用 QueueNum（应为 RamLat）。
    */
   def SubLlNum      = RamLat*QueueNum
   val sub_deq_ptr   = Wire(Vec(SubLlNum,UInt(PtrW.W)))
@@ -148,19 +157,27 @@ class VoqLinkList(QueueNum:Int,RamLat:Int,RscNum:Int,PtrW:Int) extends GenModule
   val sub_ram_wdata = Wire(Vec(SubLlNum,UInt(PtrW.W)))
   val deq           = io.i_deq.reduceTree(_|_)
 
+  // 每队列访问序号：在 RamLat 个 lane 间轮转
   val enq_seq = Wire(Vec(QueueNum,UInt(log2Ceil(RamLat).W)))
   val deq_seq = Wire(Vec(QueueNum,UInt(log2Ceil(RamLat).W)))
 
   for(q<-0 until QueueNum){
-    enq_seq(q) := Counter(io.i_enq && io.i_enq_qid === q.U,QueueNum)._1
-    deq_seq(q) := Counter(io.i_deq(q),QueueNum)._1
+    enq_seq(q) := Counter(io.i_enq && io.i_enq_qid === q.U,RamLat)._1
+    deq_seq(q) := Counter(io.i_deq(q),RamLat)._1
   }
 
+  // 子链表命中：队列 q=i/RamLat 的第 seq%RamLat 次访问落在 lane=i%RamLat
+  val enqHit = Wire(Vec(SubLlNum,Bool()))
+  val deqHit = Wire(Vec(SubLlNum,Bool()))
   for(i<-0 until(SubLlNum))yield {
+    val q    = i / RamLat
+    val lane = i % RamLat
+    enqHit(i) := io.i_enq && io.i_enq_qid === q.U && enq_seq(q) === lane.U
+    deqHit(i) := io.i_deq(q) && deq_seq(q) === lane.U
     val SubLl = Module(new SubLinklist(RamLat,RscNum,PtrW))
-    SubLl.io.i_enq      := io.i_enq && (enq_seq(io.i_enq_qid) ===(i%RamLat).U)
+    SubLl.io.i_enq      := enqHit(i)
     SubLl.io.i_enq_ptr  := io.i_enq_ptr
-    SubLl.io.i_deq      := io.i_deq(math.floor(i/QueueNum).toInt) && (deq_seq(math.floor(i/QueueNum).toInt)=== (i%RamLat).U)
+    SubLl.io.i_deq      := deqHit(i)
     sub_deq_ptr(i)  := SubLl.io.o_deq_ptr
     sub_ll_empty(i) := SubLl.io.o_empty
     sub_head_ptr(i) := SubLl.io.o_head_ptr
@@ -178,13 +195,22 @@ class VoqLinkList(QueueNum:Int,RamLat:Int,RscNum:Int,PtrW:Int) extends GenModule
   io.ll_mem_intf.wdata := sub_ram_wdata.zip(sub_ram_we).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
   io.ll_mem_intf.raddr := sub_ram_raddr.zip(sub_ram_re).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
 
+  // 共享单口访存冲突检查（仿真期暴露；同拍多队列同时访存属已知的 WIP 限制，
+  // 见上方注释 "might need prefetch logic later"）。
+  // 注意：assert 消息必须为 ASCII —— firtool 不支持字符串里的 unicode 转义。
+  chisel3.assert(PopCount(sub_ram_re) <= 1.U, "VoqLinkList: multiple sub-linklists issue read in the same cycle (shared single-port conflict)")
+  chisel3.assert(PopCount(sub_ram_we) <= 1.U, "VoqLinkList: multiple sub-linklists issue write in the same cycle (shared single-port conflict)")
+
   val ll_cnt = RegInit(0.U(log2Ceil(RscNum+1).W))
   val ll_full = RegInit(false.B)
+  val deqNum = PopCount(io.i_deq) // 多队列同拍出队时占用应按实际出队数递减
 
-  when(io.i_deq.reduceTree(_|_) && !io.i_enq){
-    ll_cnt := ll_cnt -1.U
-  }.elsewhen(!io.i_deq.reduceTree(_|_) && io.i_enq){
+  when(deq && !io.i_enq){
+    ll_cnt := ll_cnt - deqNum
+  }.elsewhen(!deq && io.i_enq){
     ll_cnt := ll_cnt + 1.U
+  }.elsewhen(deq && io.i_enq){
+    ll_cnt := ll_cnt + 1.U - deqNum
   }
 
   when(io.i_enq && ll_cnt ===(RscNum-1).U && !deq){
@@ -192,28 +218,11 @@ class VoqLinkList(QueueNum:Int,RamLat:Int,RscNum:Int,PtrW:Int) extends GenModule
   }.elsewhen(ll_cnt === RscNum.U && !io.i_enq && deq){
     ll_full := false.B
   }
-  val deq_sel = deqSel(io.i_deq,deq_seq.zip(io.i_deq).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_))
   io.o_empty    := sub_ll_empty.reduceTree(_&&_)
-  io.o_deq_ptr  := sub_deq_ptr.zip(deq_sel).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
+  io.o_deq_ptr  := sub_deq_ptr.zip(deqHit).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
   io.o_full     := ll_full
-  val enq_sel   = enqSel(io.i_enq_qid,enq_seq(io.i_enq_qid))
-  io.o_tail_ptr := sub_tail_ptr.zip(enq_sel).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
-  io.o_head_ptr := sub_head_ptr.zip(deq_sel).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
+  io.o_tail_ptr := sub_tail_ptr.zip(enqHit).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
+  io.o_head_ptr := sub_head_ptr.zip(deqHit).map(x=>Mux(x._2,x._1,0.U)).reduce(_|_)
 
-
-  def deqSel(deq_vld:Vec[Bool],seq:UInt)={
-    val w = Wire(Vec(QueueNum*RamLat,Bool()))
-    for(i<-0 until QueueNum*RamLat){
-      w(i) := deq_vld(math.floor(i/QueueNum).toInt) && (i%QueueNum).U === seq
-    }
-    w
-  }
-  def enqSel(qid:UInt,seq:UInt)={
-    val w = Wire(Vec(QueueNum*RamLat,Bool()))
-    for(i<-0 until QueueNum*RamLat){
-      w(i) := qid===math.ceil(i/RamLat).toInt.U && (i%QueueNum).U === seq
-    }
-    w
-  }
 
 }

@@ -20,7 +20,10 @@ class RR (val ClientNum:Int) extends Module{
     val enable = Input(Bool())
   })
   val point_ff = RegInit(1.U(ClientNum.W))
-  when (io.enable){
+  // 仅在实际发出授权时旋转指针。
+  // 修复：enable=1 且无人 ready 时 grant=0，旧实现会把 point_ff 写成 0，
+  // 而 RrLogic(rdy, 0) ≡ 0 —— 仲裁器从此永久卡死（WRR 经内部 RR 同样暴露）。
+  when (io.enable && io.grant.orR) {
     point_ff := Cat(io.grant(ClientNum-2,0),io.grant(ClientNum-1))
   }
   io.grant := RrLogic(io.ready,point_ff)
@@ -48,9 +51,13 @@ class WRR(val ClientNum:Int,WtWidth:Int) extends Module{
   val load_en   = !req.reduce(_|_)
   val mask_req  = Mux(load_en,io.ready,Cat(req.reverse))
   io.grant := RR(mask_req,io.enable)
+  // 修复：带饱和的扣减。旧实现 `next - grant(i)` 在 weight=0 却被授予（load 拍 mask_req
+  // 不看权重）或 wt 恰好扣到 0 的拍会回绕成巨值，客户端从此霸占仲裁。
   for(i<-0 until ClientNum){
     when(io.enable){
-      wt(i) := Mux(load_en, io.weight(i), wt(i)) - io.grant(i)
+      val next  = Mux(load_en, io.weight(i), wt(i))
+      val spent = Mux(io.grant(i), 1.U(WtWidth.W), 0.U(WtWidth.W))
+      wt(i) := Mux(next > spent, next - spent, 0.U(WtWidth.W))
     }
   }
 }

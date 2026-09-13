@@ -123,4 +123,39 @@ class ArbiterSpec extends AnyFlatSpec with Matchers {
       assert(clientsSeen.size >= 2, s"Should see both clients, saw: $clientsSeen")
     }
   }
+
+  // ---- 死锁回归（2026-09-13 修复：enable=1 且无请求时旧实现把 point_ff 清 0，
+  //      RrLogic(rdy,0)≡0，仲裁器此后永久卡死）----
+
+  "RR" should "recover after enable with no requests (no deadlock)" in {
+    simulate(new RR(4)) { c =>
+      SimReset(c)
+      c.io.enable.poke(true.B)
+      c.io.ready.poke(0.U)
+      for (_ <- 0 until 4) {
+        c.clock.step(1)
+        c.io.grant.expect(0.U) // 无请求期间 grant 恒 0，但指针不得被破坏
+      }
+      c.io.ready.poke("b0100".U) // 请求恢复后必须立即能授予
+      c.clock.step(1)
+      c.io.grant.expect(4.U)
+    }
+  }
+
+  "WRR" should "recover after enable with no requests (no deadlock)" in {
+    simulate(new WRR(2, 4)) { c =>
+      SimReset(c)
+      c.io.enable.poke(true.B)
+      c.io.weight(0).poke(3.U)
+      c.io.weight(1).poke(3.U)
+      c.io.ready.poke(0.U)
+      for (_ <- 0 until 4) {
+        c.clock.step(1)
+        c.io.grant.expect(0.U)
+      }
+      c.io.ready.poke("b10".U)
+      c.clock.step(1)
+      c.io.grant.expect(2.U) // 旧实现：内部 RR 指针已被清 0，此处永远 0
+    }
+  }
 }

@@ -26,6 +26,8 @@ class SystemRegFileTop(sysMap: SystemMap, addrWidth: Int = 32, dataWidth: Int = 
     val addr     = Input(UInt(addrWidth.W))
     val wdata    = Input(UInt(dataWidth.W))
     val rdata    = Output(UInt(dataWidth.W))
+    val rvalid   = Output(Bool())
+    val busy     = Output(Bool())
     val user     = new RegUserRecord(sysMap.flatMap)
     val memPorts = new MemPortRecord(sysMap.allMemsAbsolute)
   })
@@ -54,6 +56,10 @@ class SystemRegFileTop(sysMap: SystemMap, addrWidth: Int = 32, dataWidth: Int = 
   // ---------------- 汇聚：读数据按模块命中选择 ----------------
   private val moduleRdata: Seq[UInt] = moduleTops.map(_._2.io.rdata)
   io.rdata := MuxCase(0.U(dataWidth.W), moduleHits.zip(moduleRdata))
+
+  // 读有效：命中模块的 rvalid；未命中任何模块 → io.rd 当拍有效（读 0）
+  io.rvalid := MuxCase(io.rd, moduleHits.zip(moduleTops.map(_._2.io.rvalid)))
+  io.busy := moduleTops.map(_._2.io.busy).foldLeft(false.B)(_ || _)
 
   // ---------------- 用户连接面：全系统平铺透传 ----------------
   sysMap.allRegsAbsolute.foreach { ra =>
@@ -107,7 +113,8 @@ class SystemAxiLiteRegFile(sysMap: SystemMap, addrWidth: Int = 32, dataWidth: In
 
   inner.io.wr := wHand
   inner.io.rd := arHand
-  inner.io.addr := Mux(arHand, io.axi.ar_addr, wrAddrReg)
+  // 修复：AW 与 W 同拍握手时写地址用旧寄存器（与 AxiLiteRegFile 同病）
+  inner.io.addr := Mux(arHand, io.axi.ar_addr, Mux(awHand, io.axi.aw_addr, wrAddrReg))
   inner.io.wdata := io.axi.w_data
 
   private val bValid = RegInit(false.B)
@@ -116,17 +123,18 @@ class SystemAxiLiteRegFile(sysMap: SystemMap, addrWidth: Int = 32, dataWidth: In
   when(bValid && bHand) { bValid := false.B }
   when(wHand) { bValid := true.B }
 
+  // 修复：由内层 rvalid 指示采样点（与 AxiLiteRegFile 相同），memory 读不再锁到陈旧数据
   private val rValid = RegInit(false.B)
-  private val rDataReg = RegNext(inner.io.rdata)
+  private val rDataReg = RegEnable(inner.io.rdata, inner.io.rvalid)
   io.axi.r_valid := rValid
   io.axi.r_data  := rDataReg
   io.axi.r_resp  := AxiResp.OKAY
   when(rValid && rHand) { rValid := false.B }
-  when(arHand) { rValid := true.B }
+  when(inner.io.rvalid) { rValid := true.B }
 
-  io.axi.aw_ready := true.B
-  io.axi.w_ready  := true.B
-  io.axi.ar_ready := true.B
+  io.axi.aw_ready := !inner.io.busy
+  io.axi.w_ready  := !inner.io.busy
+  io.axi.ar_ready := !inner.io.busy && !rValid
 
   sysMap.allRegsAbsolute.foreach { ra =>
     val name = ra.reg.name
