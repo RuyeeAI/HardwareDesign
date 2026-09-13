@@ -1,0 +1,10 @@
+E:/project/common_cbb/fifos/sync_fifo.v
+E:/project/common_cbb/fifos/async_fifo.v
+E:/project/common_cbb/fifos/sync_pre_fifo.v
+E:/project/common_cbb/sch/rr.v
+E:/project/common_cbb/async/synchronizer.v
+E:/project/common_cbb/async/async_bus.v
+E:/project/common_cbb/async/async_hs.v
+E:/project/common_cbb/sim_ram/tp_sim_ram.v
+E:/project/common_cbb/sim_ram/sp_sim_ram.v
+E:/project/common_cbb/sim_ram/dp_sim_ram.v

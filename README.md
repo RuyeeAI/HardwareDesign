@@ -5,17 +5,26 @@
 
 ## 环境
 
-- sbt 1.9+（Scala 2.13.12 / Chisel 3.6.1 / chiseltest 0.6.2）
-- 仿真后端：verilator（`src/test` 中的 wrap 级测试需要；纯 Scala 侧测试无额外依赖）
+- sbt 1.9+（Scala 2.13.12 / Chisel 5.3.0，`org.chipsalliance`）
+- 仿真：`chisel3.simulator`（Verilator 后端，随 Chisel 提供，不再依赖已停止维护的 chiseltest）
+- **firtool 必须在 `$PATH` 上**（Chisel 5 只从 PATH 查找，不内置下载）。注意 1.62.0 在
+  `FPP/Parser` 上会崩（见下）；已知可用的较新版本为 1.159.0。
+- **TestCase 注意**：`chisel3.simulator` 不像旧的 treadle 后端那样在 t=0 就给出 `RegInit` 值，
+  依赖复位初值的用例必须先调 `BaseCbb.SimReset(dut)`（见 `src/test/scala/BaseCbb/SimReset.scala`）。
 
 ## 快速上手
 
 ```bash
-sbt test                        # 全量回归（41+ suites）
+sbt test                        # 全量回归
 sbt "runMain BaseCbb.memory.EmitMemVerilog"   # 生成示例 SRAM Verilog 到 generated/
+sbt "runMain HBS.swf.SwfMain"   # HBS 顶层 SwfCore 的 Verilog 生成（需大堆，见下）
 ```
 
 所有 `EmitXxx` 入口的产物统一写入 `generated/`（已 gitignore，可随时重新生成）。
+
+> HBS 的重顶层（`SwfCore` / `SfuTop` / `SfuCorner` / `SfuMid`）实例化规模极大，
+> elaboration 需 >6GB 堆，故不在默认 `sbt test` 内；需要时 `sbt -J-Xmx8G "runMain HBS.swf.SwfMain"`。
+
 
 ## 模块索引
 
@@ -40,10 +49,37 @@ sbt "runMain BaseCbb.memory.EmitMemVerilog"   # 生成示例 SRAM Verilog 到 ge
 - `Parser/`：多协议报文头解析流水线（ETH/VLAN/MPLS/IPv4/IPv6/TCP/UDP/GRE/隧道等）
 - `OSA/OSM/`：输出侧调度/组包（分段、上下文分配、缓存、信元组装、出口调度、反压）
 
+### HBS — 高带宽交换（`src/main/scala/HBS/`）
+
+2026-09-13 由 `gitee.com/ethanhao/HighBandwidthSwitching`（分支 master @ 8fdd933）整合进来，
+只保留其独有 RTL；仓库里那份重复的 `BaseCbb` 已弃用，统一用本仓库的 `BaseCbb`。
+
+- `top/` `tm/`：HBS 全局参数（`HbsParams`）与流量管理参数/结构（`TmParam`、`PacketLinkList`）
+- `adm/`：报文聚合分发（`HbsAdm`，WIP：IO 尚未展开）
+- `swf/`：交换阵列主体 —— `swf_top/SwfCore`+`SfuTop`、`sfu_corner/SfuCorner`+`SfuBuffer`+`SfuControllor`、
+  `sfu_mid/SfuMid`、`sfu_routing/SfuRouting`+`SfuRoutDatapath`、`common/`（`BusMatrix`、`BusSelection`、
+  `SfuiSlip`、`VoqBuffer`、`Bundles`、`SwfInterface`、`SwfParams` 等）
+- 设计图随代码入库（`HBS.svg` / `SWF.svg` / `SfuCorner.svg` 等），沿用 BaseCbb 的既有约定
+
+移植时相对 HBS 的改动（完整清单见 `.workbuddy/memory/2026-09-13.md`）：
+`BaseCbb.utils.*` → `BaseCbb.misc/io/data`；`Memory(..., "1R1W")` → `MemoryAccessType.TP`；
+`log2Up` → `log2Ceil`；`GenParam` 补回 `BaseCbb.data.GenParam`（HBS 侧原 `BaseCbb/utils/GeneratorLib.scala` 其余部分无人引用，未迁）。
+
 ### 其他
 
-- `Feishu/`：飞书开放平台客户端（需本地 `feishu.conf`，参见 `feishu.conf.example`）
 - `ImpulseGenerator/`：受控脉冲发生器
+
+## 参考 RTL 归档（`rtl/`）
+
+`rtl/common_cbb/` 存放 **2015 年手写的 Verilog 基础单元库原始源码**（作者 Ethan Hao），2026-09-13 由仓库外
+`Code-Repos/common_cbb/` 整合进来统一管理。
+
+- 定位：`BaseCbb` 的**语义对照基线** + 后端 `BlackBox` 的**原语来源**。
+- **不参与 sbt 构建**，不在 `sbt test` 范围内；`.gitignore` 通过 `!rtl/**` 例外规则入库。
+- 其中 `sync_pre_fifo`（预取 FIFO）、`dp_sim_ram`（真双口 RAM）、`ram_rdat_cg`（读数据门控）、
+  `ma_fv_builder_mux`（字节合并 mux）**尚未 Chisel 化**，详见归档 README。
+
+详见 [`rtl/common_cbb/README.md`](rtl/common_cbb/README.md)（含逐模块对照表与归档记录）。
 
 ## 文档
 
