@@ -1,4 +1,4 @@
-package FPP
+package FPP.LB.cfg
 
 import BaseCbb.data.{GenBundle, fldAttr}
 import chisel3._
