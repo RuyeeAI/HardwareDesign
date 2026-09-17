@@ -17,15 +17,21 @@ import BaseCbb.memory.MemoryProtectType.MemoryProtectType
 // d-left：numBanks 个哈希子表，插入时选"占用最少"的子表（d-left hashing），
 //   显著提高装填率。numBanks = 1 即退化为普通组相联哈希表。
 //
-// 【流水线版布局要点】（相对串行版）
-//   1. KT 按 (bank, way) 分成 ktBanks = numBanks*ways 个物理 bank：
-//      插入桶 (b) 路 (w) 的条目固定从 KT bank (b*ways+w) 分配，
-//      因此查找时 ktBanks 个候选必然落在不同 bank → 一次全并行读，
-//      不再逐候选串行扫描（这是 II=1 的前提）。
-//      每个 slot 的容量 = ktDepth/ktBanks，不再全局共享。
-//   2. HT 的 SRAM 只存 payload；valid / 时间戳 / claim 位放在 HT 旁的
+// 【查找流程】HT 一次读出一整桶（ways 条），桶里每条存 {指纹 fp, KT 全局索引}：
+//   ① 输入的 CRC 哈希切出桶索引，再用桶索引**之上**的连续 fpW 位当指纹（不再额外哈希）
+//   ② 桶内各条的指纹与输入指纹并行比对（纯组合，从 HT 回读数据上做）
+//   ③ 指纹命中的那一路用它的 KT index **只读一次 KT**，取 Full Key 做最终确认
+//   ④ Full Key 相等即命中
+//   只有指纹命中才读 KT，且**不会读多路 KT 一起对比**（省掉 ktBanks 个 keyW 宽比较器和
+//   多路 KT 端口）。为此插入时必须保证：一个 key 的全部候选槽位里不存在"另一个相同指纹
+//   的条目"，否则本次查找会撞上别人的指纹而误判 —— 见 EmLayout 的插入规则说明。
+//
+// 【流水线版布局要点】
+//   1. HT 的 SRAM 只存 payload；valid / 时间戳 / claim 位放在 HT 旁的
 //      寄存器阵列（AgeTable）：查找时 valid 组合读出，老化扫描只扫寄存器，
 //      **扫描不占访存带宽**。
+//   2. KT 是**单实例**存储 + 全局 FreeList：每次查找只读 1 路，不需要按 (bank,way) 分 bank
+//      并行读，因此指针回到全局 ktDepth 空间、容量全局共享。
 //   3. AD 从 SP 改为 TP：维护写 AD 与流水线读 AD 不再互斥。
 //      同理 HT/KT 都是 TP（同拍 1 读 + 1 写），因此**只有读需要时隙**。
 // ===========================================================================
@@ -113,13 +119,15 @@ final case class EmParams(
     htWays: Int = 4,         // 每桶路数（组相联度）
     numBanks: Int = 1,       // d-left 子表数；1 = 关闭 d-left；2 = 2-left
     dLeftTie: TiePolicy = TiePolicy.Random,  // 并列时的仲裁（见 TiePolicy 注释）
-    ktDepth: Int = 4096,     // KT 总条目数（= ktBanks 个 slot 的总和；须为 2 的幂）
+    ktDepth: Int = 4096,     // KT 总条目数（单实例存储；须为 2 的幂）
     useKt: Boolean = true,   // false = key 内联进 HT（单级表，查找最快）
     adDepth: Int = 1024,     // AD 条目数（须为 2 的幂）
     useAd: Boolean = true,   // false = 动作数据内联进 KT（省一级间接）
     ovfcDepth: Int = 0,      // OVFC：HT 溢出 TCAM 深度；0 = 关闭；须为 2 的幂（0 除外）
     crcWidth: Int = 32,      // CRC 输出位宽
     crc: CrcMode = CrcHardwired.crc32,
+    fpWidth: Int = 12,       // 指纹位宽：HT 里每条存一份，查找时先用它筛选候选，
+                             // 只有指纹命中的那一路才去读 KT 的 Full Key（见 EmLayout.fpOf）
     learnFwdDepth: Int = 8,  // 在途插入转发 CAM 深度（覆盖"插入落盘"前的在途查找）
     slotWaitMax: Int = 8,    // svc 等待空时隙的上限拍数，超时则向前反压换取时隙
                              // （越小＝维护/老化越跟得上，代价是查找 II 的少量损失）
@@ -153,24 +161,39 @@ final case class EmLayout(p: EmParams) {
   val bankW     = math.max(1, log2Ceil(numBanks))
   val wayW      = math.max(1, log2Ceil(ways))            // 路编号位宽（ways=1 时取 1，避免 0 宽）
   val slotW     = math.max(1, log2Ceil(numBanks * ways)) // (bank,way) 扁平槽位编号位宽
-  val ktBanks   = numBanks * ways   // KT 的物理 bank 数 = 一次查找并行读的候选数
+  val ktBanks   = numBanks * ways   // 一次查找的候选槽位数（Kt 单实例，不再对应物理 bank）
   val hashW     = idxW * numBanks
   require(hashW <= p.crcWidth, s"hash 需要 ${hashW} 位，超过 crcWidth(${p.crcWidth})")
 
   val crcW = p.crcWidth
 
-  // ---- KT：按 (bank,way) 分 bank ----
-  // 插入桶 (b) 的路 (w) 时，KT 条目固定从 bank (b*ways+w) 分配，
-  // 因此查找时 ktBanks 个候选落在不同 bank，可一次全并行读。
-  // 代价：每个 slot 的容量独立（不再是全局共享的空闲池），必须够用：
-  //   单 slot 上的条目数 <= bankDepth（每桶最多 1 条）+ ovfcDepth（OVFC 也可能落在这个 slot）
-  val ktDepthReal = if (p.useKt) p.ktDepth / ktBanks else 1
-  val ktPtrW      = math.max(1, log2Ceil(ktDepthReal))
+  // ---- 指纹（fingerprint）----
+  // 查找流程：HT 一次读出一整桶，把桶里每条的"指纹"和输入 key 的指纹并行比对，
+  // 命中的那一路才用它的 ktPtr 去读 KT 的 Full Key 做最终确认。
+  // 指纹直接取哈希里**桶索引之上**的连续 fpW 位，不额外做哈希。
+  val fpW = if (p.useKt) p.fpWidth else 0
   if (p.useKt) {
-    require(p.ktDepth % ktBanks == 0, s"ktDepth(${p.ktDepth}) 必须能被 ktBanks($ktBanks) 整除")
-    require(ktDepthReal >= bankDepth + p.ovfcDepth,
-      s"KT 每个 slot 容量 ktDepth/ktBanks=${ktDepthReal} 不足：需要 >= bankDepth(${bankDepth}) + ovfcDepth(${p.ovfcDepth})")
+    require(p.fpWidth >= 1, "fpWidth 必须 >= 1（useKt=true 时）")
+    require(hashW + fpW <= p.crcWidth,
+      s"桶索引(${hashW}) + 指纹(${fpW}) 需要 ${hashW + fpW} 位，超过 crcWidth(${p.crcWidth})")
   }
+
+  // 【插入规则 —— 保证"指纹命中即唯一"，从而只读 1 路 KT 就是精确的】
+  // 插入 key K 时，检查 K 的**全部候选槽位**（numBanks 个桶 × ways 路）里是否存在另一条
+  // valid 条目、其指纹等于 fp(K)。若存在 → K 不进 HT（落 OVFC 或 insFail，计 fpClash）。
+  // 于是对任意在表条目，其候选槽位集合里"同指纹"的条目至多它自己：
+  //   · 查找：指纹命中掩码至多 1 位 → 只读 1 路 KT 即可精确判定
+  //   · 维护(add/del/upd)：找"是否已存在"时同理，至多读 1 路 KT
+  // 该关系是**对称**的（E 落在 K 的候选桶 ⇔ 两者在该 bank 的桶索引相同 ⇔ K 落在 E 的候选桶），
+  // 所以插入时检查一次即可，不会被后续插入破坏。
+  // 代价：指纹撞车的那次插入只能落 OVFC（OVFC 用全 key 比较，精确）；OVFC 关闭/满则 insFail。
+  // 撞车概率 ≈ 候选槽位数 × 2^-fpW（fpW=12、4 路时约 0.1%）。
+
+  // ---- KT：单实例存储，全局指针空间 ----
+  // 因为每次查找只需读"指纹命中的那一路"（插入时保证桶内指纹不撞车，见 §插入规则），
+  // 不再需要按 (bank,way) 分 bank 并行读，KT 回到单实例 + 全局 FreeList。
+  val ktDepthReal = p.ktDepth
+  val ktPtrW      = math.max(1, log2Ceil(ktDepthReal))
 
   val adPtrW  = math.max(1, log2Ceil(p.adDepth))
 
@@ -181,9 +204,9 @@ final case class EmLayout(p: EmParams) {
   val agingOn = p.aging.isDefined
 
   // ---- HT：SRAM 只存 payload，valid/ts/claim 在 AgeTable ----
-  //   useKt  : 负载 = ktPtr（指向本 slot 的 KT bank）
-  //   !useKt : 负载 = key + (useAd ? adPtr : ad)
-  val htPayW   = if (p.useKt) ktPtrW else (keyW + (if (p.useAd) adPtrW else adW))
+  //   useKt  : 负载 = {指纹 fp, KT 全局索引 ktPtr}
+  //   !useKt : 负载 = key + (useAd ? adPtr : ad)   （key 内联，不需要指纹）
+  val htPayW   = if (p.useKt) fpW + ktPtrW else (keyW + (if (p.useAd) adPtrW else adW))
   val htWordW  = htPayW * ways          // 一个 HT word = 一整桶（ways 条 payload）
   val ageEntryW = 1 + ageW + 1          // valid + ts + claim
   val ageWords = p.htDepth * ways       // 老化阵列总条目数（= HT 总条目数）
@@ -193,9 +216,8 @@ final case class EmLayout(p: EmParams) {
   val ktEntryW = keyW + ktPayW
 
   // ---- OVFC（HT 溢出 TCAM）----
-  // useKt 时负载 = {ktSlot, ktPtr}：KT 按 slot 分 bank，而 OVFC 条目不在某个固定的
-  // (bank,way) 位置上，必须自己记住它的 KT 落在哪个 bank，否则取不到 KT。
-  val ovfcPayW = if (p.useKt) ktPtrW + slotW else (if (p.useAd) adPtrW else adW)
+  // useKt 时负载就是 KT 的全局指针（KT 已是单实例，不需要再记 bank）；OVFC 条目用**全 key** 比较，精确。
+  val ovfcPayW = if (p.useKt) ktPtrW else (if (p.useAd) adPtrW else adW)
   val ovfcEn   = p.ovfcDepth > 0
   // 注意区分"选择位宽"和"计数位宽"：计数必须能表达 ovfcDepth 本身（=扫描结束），
   // 否则扫描游标永远到不了终点（实测踩过）。
@@ -212,14 +234,16 @@ final case class EmLayout(p: EmParams) {
   val lookupLatency = 2 + (if (p.useKt) 1 else 0) + (if (p.useAd) 1 else 0)
 
   // ---- HT payload 字段访问器 ----
+  /** 桶内该条的指纹（只 useKt 有；!useKt 时 key 直接内联，不需要指纹） */
+  def htFp(e: UInt): UInt = { require(p.useKt); e(htPayW - 1, ktPtrW) }
+  /** KT 全局索引（只 useKt 有） */
   def htKtPtr(e: UInt): UInt = { require(p.useKt); e(ktPtrW - 1, 0) }
+  /** 从 CRC 哈希里取指纹：桶索引之上的连续 fpW 位，不额外做哈希 */
+  def fpOf(h: UInt): UInt =
+    if (p.useKt) h(math.min(p.crcWidth, hashW + fpW) - 1, hashW) else 0.U(1.W)
   def htKey(e: UInt): UInt = { require(!p.useKt); e(keyW - 1, 0) }
   def htAdPtr(e: UInt): UInt = { require(!p.useKt && p.useAd); e(htPayW - 1, keyW) }
   def htAd(e: UInt): UInt = { require(!p.useKt && !p.useAd); e(htPayW - 1, keyW) }
-
-  // ---- OVFC 负载字段访问器 ----
-  def ovfcKtSlot(e: UInt): UInt = { require(p.useKt); e(ovfcPayW - 1, ktPtrW) }
-  def ovfcKtPtr(e: UInt): UInt = { require(p.useKt); e(ktPtrW - 1, 0) }
 
   // ---- KT 条目字段访问器 ----
   def ktKey(e: UInt): UInt = e(keyW - 1, 0)

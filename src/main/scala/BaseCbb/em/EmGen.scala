@@ -67,11 +67,11 @@ object EmGen {
 
     println(s"[em] preset=$name")
     println(f"[em]   key=${l.keyW} ad=${l.adW} ht=${p.htDepth}x${l.ways} banks=${l.numBanks} " +
-      f"kt=${p.ktDepth}(${l.ktBanks}bank x ${l.ktDepthReal}) ad=${p.adDepth} ovfc=${p.ovfcDepth}")
+      f"kt=${p.ktDepth}(单实例,全局指针) ad=${p.adDepth} ovfc=${p.ovfcDepth}")
     println(s"[em]   useKt=${p.useKt} useAd=${p.useAd} crc=${p.crc.getClass.getSimpleName} " +
       s"aging=${p.aging.isDefined} learning=${p.learning.isDefined} protect=${p.memProtect}")
-    println(s"[em]   HT负载=${l.htPayW}b  KT条目=${l.ktEntryW}b  老化条目=${l.ageEntryW}b  " +
-      s"查找延迟=${l.lookupLatency}拍（II=1，CrcHardwired 下）")
+    println(s"[em]   HT负载=${l.htPayW}b（指纹 ${l.fpW}b + KT指针 ${l.ktPtrW}b）  KT条目=${l.ktEntryW}b  " +
+      s"老化条目=${l.ageEntryW}b  查找延迟=${l.lookupLatency}拍（II=1，CrcHardwired 下）")
 
     val dir = s"$outDir/$name"
     // 1) CHIRRTL

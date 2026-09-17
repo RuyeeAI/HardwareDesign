@@ -5,45 +5,39 @@ import chisel3.util._
 import BaseCbb.memory._
 
 // ===========================================================================
-// EM（Exact Match）表模块 —— 流水线版
+// EM（Exact Match）表模块 —— 流水线版（指纹过滤 + 单实例 KT）
 //
-// 对外语义（相对串行版）：
-//   io.key   : Valid → Decoupled（多了 ready）。**没有 key FIFO**，靠 ready 反压。
-//   io.wr    : Valid → Decoupled（多了 ready），不再静默丢命令。
-//   io.rsp   : hit + ad，不变。
-//   吞吐     : 命中路径 II=1（CrcHardwired 下）；svc 抢读端口时插入时隙气泡。
+// 对外语义：
+//   io.key : Decoupled（有 ready，反压不丢包）；io.wr : Decoupled；io.rsp : hit + ad
+//   吞吐   : 命中路径 II=1（CrcHardwired 下）；svc 抢读端口时插入时隙气泡。
 //
 // ---------------------------------------------------------------------------
-// 查找流水线与"影子寄存器"（这是本版最容易写错的地方）
+// 查找流程（三层过滤，只有指纹命中才读 KT）
 // ---------------------------------------------------------------------------
-// 存储读延迟 1 拍：第 T 拍发起读、第 T+1 拍 rdata 有效。
-// 所以"发起读的那一级"和"用到数据的那一级"必须错开一拍，metadata 要用影子寄存器跟上：
+//   S0 接收   key → CRC 哈希；哈希低位切出桶索引 idx[b]，桶索引**之上**的 fpW 位当指纹 fp
+//   r1        idx 驱动 HT 全 bank 并行读（一次读出一整桶 ways 条 {fp, ktPtr}）
+//   d1        · 桶内各条指纹与输入 fp **并行比对**（纯组合，在 HT 回读数据上做）
+//             · 指纹命中的那一路（至多一路，见插入规则）用它的 ktPtr 发起**一次** KT 读
+//             · OVFC 命中优先：命中时改用 OVFC 里的 ktPtr（OVFC 用全 key 比较，精确）
+//   d2        · 只有这一条 KT 的 Full Key 参与比较（**不是多路 KT 一起比**）
+//             · Full Key 相等 且 指纹命中位有效 → 命中；否则 miss
+//   d3        AD 回读 → rsp
 //
-//   拍   T      : S0 接收（哈希组合 + OVFC 比对）
-//        T+1    : r1 持有 idx，发起 HT 全 bank 读
-//        T+2    : d1 拍 —— HT rdata 有效；d1 携带 {key,idx,ovfc,valid位图}（HT 读的 metadata 影子）
-//                 用 HT rdata 组合地形成 KT 读地址并当拍发起
-//        T+3    : d2 拍 —— KT rdata 有效；并行比较 + 转发 CAM 比对（miss 判定在这里）
-//                 用比较结果组合地形成 AD 读地址并当拍发起
-//        T+4    : d3 拍 —— AD rdata 有效 → 输出 rsp
+// 为什么"至多一路命中指纹" —— 插入规则（EmLayout 有完整说明）：
+//   插入 K 时，只要 K 的候选槽位里已有另一条相同指纹的条目，本次插入就不进 HT
+//   （落 OVFC 或 insFail，计 fpClash）。该关系对称，所以插入时查一次即可永久成立。
+//   于是查找/维护的指纹命中掩码至多 1 位 → 只读 1 路 KT 就是精确的。
 //
-//   影子级数随配置裁剪：d1 恒有；useKt||useAd 才有 d2；useKt&&useAd 才有 d3。
-//   查找延迟 = 2 + useKt + useAd 拍。
+// 代价对比：原"读多路 KT 并行比全 key"需要 ktBanks 个 keyW 宽比较器 + ktBanks 路 KT 端口；
+//   现在只需 ktBanks 个 fpW 宽比较器 + 1 个 keyW 比较器 + **1 路 KT 端口**。
 //
-// svc 抢端口时 svcOwns=1 → adv=0，**全部流水线寄存器一起冻结**，读地址不变、下一拍重发，
-// 数据不会错位（不需要额外的作废逻辑）。
 // ---------------------------------------------------------------------------
-//
-// svc 共享访问引擎（维护口 / 自学习插入 / 老化动作，三者共用）：
-//   读地址依赖链导致一次操作要 2 个"时隙"（HT 桶 + KT 候选）；
-//   时隙来源 ① 流水线自然空档（零代价）② 等够 slotWaitMax 拍仍没有 →
-//   拉低 io.key.ready 反压上游并冻结流水线 1 拍，强行取得时隙。
-//   写不需要时隙：HT/KT/AD 都是 TP（同拍 1 读 + 1 写）。
-//
-// 三条需求的落点：
-//   需求1 每拍一请求      → 流水线 + KT 按 (bank,way) 分 bank 并行读，去掉串行候选扫描
-//   需求2 背靠背同 KEY     → ForwardCam 在途插入转发（在 miss 判定那一拍压入）
-//   需求3 老化并释放 KT    → AgeTable 扫描零带宽 + claim 互斥；归还 KT/AD 与清 valid 同拍
+// svc 共享访问引擎（维护口 / 自学习插入 / 老化动作）
+// ---------------------------------------------------------------------------
+//   优先级：老化动作 > wr > 自学习插入
+//   每次操作至多 2 个"时隙"：① 读 HT 桶（+AgeTable 查询）② 指纹命中时读那 1 条 KT
+//   时隙来源：① 流水线自然空档（零代价）② 等够 slotWaitMax 拍 → 反压上游并冻结流水线 1 拍
+//   写不需要时隙：HT/KT/AD 都是 TP（同拍 1 读 + 1 写）
 // ===========================================================================
 
 object EmOp {
@@ -66,9 +60,10 @@ class EmStatus(l: EmLayout) extends Bundle {
   val learn     = UInt(16.W)
   val ageDrop   = UInt(16.W)
   val learnDrop = UInt(16.W)   // 转发 CAM 满导致漏学的次数
+  val fpClash   = UInt(16.W)   // 因"候选槽位里已有同指纹条目"而无法进 HT 的次数（落 OVFC/insFail）
   val ovfcUse   = UInt(math.max(1, log2Ceil(l.p.ovfcDepth + 1)).W)
   val fwdUse    = UInt(math.max(1, log2Ceil(l.p.learnFwdDepth + 1)).W)
-  // KT / AD 空闲条目总数（直接观测 FreeList，用来验证"老化后资源确实被回收"）
+  // KT / AD 空闲条目总数（用来验证"老化后资源确实被回收"）
   val ktFree    = UInt(log2Ceil(l.p.ktDepth + 1).W)
   val adFree    = UInt(log2Ceil(l.p.adDepth + 1).W)
   val lkBusy    = Bool()       // 查找流水线非空
@@ -102,11 +97,12 @@ class ExactMatch(params: EmParams) extends Module {
 
   val numBanks = l.numBanks
   val ways     = l.ways
-  val ktBanks  = l.ktBanks
+  val ktBanks  = l.ktBanks           // 一次查找的候选槽位数（不再是 KT 物理 bank 数）
   val keyW     = l.keyW
   val adW      = l.adW
   val useKt    = params.useKt
   val useAd    = params.useAd
+  val fpW      = math.max(1, l.fpW)
   val ovfcEn   = l.ovfcEn
   val ovfcD    = params.ovfcDepth
   val agingOn  = l.agingOn
@@ -115,10 +111,9 @@ class ExactMatch(params: EmParams) extends Module {
   val fwdD     = params.learnFwdDepth
   val timeout  = params.aging.map(_.timeout).getOrElse(0)
 
-  private val fwdCntW    = math.max(1, log2Ceil(fwdD + 1))
-  private val ovfcCntW1  = math.max(1, log2Ceil(ovfcD + 1))
-  private val useD2      = useKt || useAd
-  private val useD3      = useKt && useAd
+  private val fwdCntW   = math.max(1, log2Ceil(fwdD + 1))
+  private val ovfcCntW1 = math.max(1, log2Ceil(ovfcD + 1))
+  private val useD3     = useKt && useAd
 
   // =========================================================================
   // 存储实例
@@ -153,11 +148,12 @@ class ExactMatch(params: EmParams) extends Module {
     val m = Module(new TpMemoryWrap3(memCfg(s"EmHt$b", l.htWordW, l.bankDepth)))
     driveAux(m); m
   }
-  val ktMems: Seq[TpMemoryWrap3] =
-    if (useKt) Seq.tabulate(ktBanks) { s =>
-      val m = Module(new TpMemoryWrap3(memCfg(s"EmKt$s", l.ktEntryW, l.ktDepthReal)))
-      driveAux(m); m
-    } else Nil
+  // KT 单实例（每次查找只读 1 路）
+  val ktMem: Option[TpMemoryWrap3] =
+    if (useKt) {
+      val m = Module(new TpMemoryWrap3(memCfg("EmKt", l.ktEntryW, l.ktDepthReal)))
+      driveAux(m); Some(m)
+    } else None
   val adMem: Option[TpMemoryWrap3] =
     if (useAd) {
       val m = Module(new TpMemoryWrap3(memCfg("EmAd", l.adW, params.adDepth)))
@@ -165,7 +161,7 @@ class ExactMatch(params: EmParams) extends Module {
     } else None
 
   private val memReady = htMems.map(_.io.dfx.initDone).reduce(_ && _) &&
-    ktMems.map(_.io.dfx.initDone).reduceOption(_ && _).getOrElse(true.B) &&
+    ktMem.map(_.io.dfx.initDone).getOrElse(true.B) &&
     adMem.map(_.io.dfx.initDone).getOrElse(true.B) && !io.memInit
   io.memInitDone := memReady
 
@@ -207,17 +203,15 @@ class ExactMatch(params: EmParams) extends Module {
   // =========================================================================
   val ageTab = Module(new AgeTable(l, timeout))
 
-  val ktFrees: Seq[FreeList] =
-    if (useKt) Seq.tabulate(ktBanks)(_ => Module(new FreeList(l.ktDepthReal))) else Nil
-  val adFree: Option[FreeList] =
-    if (useAd) Some(Module(new FreeList(params.adDepth))) else None
-  ktFrees.foreach { f => f.io.alloc := false.B; f.io.free := false.B; f.io.faddr := 0.U }
+  val ktFree: Option[FreeList] = if (useKt) Some(Module(new FreeList(l.ktDepthReal))) else None
+  val adFree: Option[FreeList] = if (useAd) Some(Module(new FreeList(params.adDepth))) else None
+  ktFree.foreach { f => f.io.alloc := false.B; f.io.free := false.B; f.io.faddr := 0.U }
   adFree.foreach { f => f.io.alloc := false.B; f.io.free := false.B; f.io.faddr := 0.U }
 
   val fwd = if (learnOn) Some(Module(new ForwardCam(fwdD, keyW, adW))) else None
 
   // =========================================================================
-  // OVFC：HT 溢出 TCAM（寄存器阵列，并行比较）
+  // OVFC：HT 溢出 TCAM（寄存器阵列，全 key 并行比较，精确）
   // =========================================================================
   val ovfcV = if (ovfcEn) RegInit(VecInit(Seq.fill(ovfcD)(false.B))) else null
   val ovfcC = if (ovfcEn) RegInit(VecInit(Seq.fill(ovfcD)(false.B))) else null  // claim
@@ -234,8 +228,6 @@ class ExactMatch(params: EmParams) extends Module {
       (hit.asUInt.orR, PriorityEncoder(hit))
     }
   def ovfcPay(i: UInt): UInt = if (ovfcEn) ovfcP(i) else 0.U(1.W)
-  def ovfcKtSlotOf(i: UInt): UInt = if (ovfcEn && useKt) l.ovfcKtSlot(ovfcP(i)) else 0.U(l.slotW.W)
-  def ovfcKtPtrOf(i: UInt): UInt = if (ovfcEn && useKt) l.ovfcKtPtr(ovfcP(i)) else 0.U(l.ktPtrW.W)
 
   val ovfcHasFree = if (ovfcEn) ovfcUseCnt =/= ovfcD.U else false.B
   val ovfcFreeSel = if (ovfcEn) PriorityEncoder(VecInit((0 until ovfcD).map(i => !ovfcV(i) && !ovfcC(i)))) else 0.U(1.W)
@@ -250,23 +242,28 @@ class ExactMatch(params: EmParams) extends Module {
   val cntLearn   = RegInit(0.U(16.W))
   val cntAgeDrop = RegInit(0.U(16.W))
   val cntLrnDrop = RegInit(0.U(16.W))
+  val cntFpClash = RegInit(0.U(16.W))
   val entryCnt   = RegInit(0.U(log2Ceil(params.htDepth * ways + ovfcD + 1).W))
 
   // =========================================================================
-  // svc 引擎：状态与时隙（先声明，流水线推进要用 adv）
+  // svc 状态与时隙（先声明，流水线推进要用 adv）
   // =========================================================================
   val S_IDLE  = 0.U(4.W); val S_HASH = 1.U(4.W); val S_HTREQ = 2.U(4.W); val S_HTW = 3.U(4.W)
   val S_KTREQ = 4.U(4.W); val S_KTW  = 5.U(4.W); val S_DEC   = 6.U(4.W); val S_ALLOC = 7.U(4.W)
   val S_WR    = 8.U(4.W); val S_FREE = 9.U(4.W); val S_AGFR  = 10.U(4.W)
+  // S_HTD：HT 数据"决策"拍 —— 必须独立于 S_HTW，因为 sPay 是 S_HTW 当拍末才写入的，
+  // 在 S_HTW 当拍就用 sFpHit/sFpSel（寄存器版）判断，拿到的是**上一轮**的桶数据。
+  val S_HTD   = 11.U(4.W)
   val sState = RegInit(S_IDLE)
 
   // =========================================================================
-  // 查找流水线寄存器
+  // 查找流水线寄存器（metadata 影子：r1 → d1 → d2 → d3）
   // =========================================================================
   val acqV   = RegInit(false.B)
   val acqKey = Reg(UInt(keyW.W))
   val acqAd  = Reg(UInt(adW.W))
   val acqIdx = Reg(Vec(numBanks, UInt(l.idxW.W)))
+  val acqFp  = Reg(UInt(fpW.W))
   val acqOvH = Reg(Bool())
   val acqOvS = Reg(UInt(ovfcCntW1.W))
   val acqOvP = Reg(UInt(math.max(1, l.ovfcPayW).W))
@@ -279,32 +276,39 @@ class ExactMatch(params: EmParams) extends Module {
   val r1Key = Reg(UInt(keyW.W))
   val r1Ad  = Reg(UInt(adW.W))
   val r1Idx = Reg(Vec(numBanks, UInt(l.idxW.W)))
+  val r1Fp  = Reg(UInt(fpW.W))
   val r1OvH = Reg(Bool())
   val r1OvS = Reg(UInt(ovfcCntW1.W))
   val r1OvP = Reg(UInt(math.max(1, l.ovfcPayW).W))
 
-  // ---- d1：HT 数据拍 ----
-  val d1V   = RegInit(false.B)
-  val d1Key = Reg(UInt(keyW.W))
-  val d1Ad  = Reg(UInt(adW.W))
-  val d1Idx = Reg(Vec(numBanks, UInt(l.idxW.W)))
-  val d1OvH = Reg(Bool())
-  val d1OvS = Reg(UInt(ovfcCntW1.W))
-  val d1OvP = Reg(UInt(math.max(1, l.ovfcPayW).W))
-  val d1Val = Reg(Vec(ktBanks, Bool()))          // HT 各候选的 valid（来自 AgeTable）
+  // ---- d1：HT 数据拍（指纹比对 + 发起唯一一次 KT 读）----
+  val d1V     = RegInit(false.B)
+  val d1Key   = Reg(UInt(keyW.W))
+  val d1Ad    = Reg(UInt(adW.W))
+  val d1Idx   = Reg(Vec(numBanks, UInt(l.idxW.W)))
+  val d1Fp    = Reg(UInt(fpW.W))
+  val d1OvH   = Reg(Bool())
+  val d1OvS   = Reg(UInt(ovfcCntW1.W))
+  val d1OvP   = Reg(UInt(math.max(1, l.ovfcPayW).W))
+  val d1Val   = Reg(Vec(ktBanks, Bool()))        // HT 各候选的 valid（来自 AgeTable）
+  // 注意：指纹比对结果**不设寄存器**。d1Val 与本拍的比对是同一个边沿更新的，
+  // 若把比对结果存在 d1FpOk 里，捕获到的会是"上一拍 d1Val（上一个请求）"的比对结果。
+  // 直接在 d1 拍组合算好、捕获进 d2。
 
-  // ---- d2：KT 数据拍（useKt）/ AD 数据拍（!useKt && useAd）----
-  val d2V   = RegInit(false.B)
-  val d2Key = Reg(UInt(keyW.W))
-  val d2Ad  = Reg(UInt(adW.W))
-  val d2Idx = Reg(Vec(numBanks, UInt(l.idxW.W)))
-  val d2OvH = Reg(Bool())
-  val d2OvS = Reg(UInt(ovfcCntW1.W))
-  val d2OvP = Reg(UInt(math.max(1, l.ovfcPayW).W))
-  val d2Val = Reg(Vec(ktBanks, Bool()))
-  val d2Hit = Reg(Bool())                        // !useKt && useAd 时的命中
-  val d2FwH = Reg(Bool())
-  val d2FwAd = Reg(UInt(adW.W))
+  // ---- d2：KT 数据拍（useKt，只比这一条 Full Key）/ AD 数据拍（!useKt && useAd）----
+  val d2V     = RegInit(false.B)
+  val d2Key   = Reg(UInt(keyW.W))
+  val d2Ad    = Reg(UInt(adW.W))
+  val d2Idx   = Reg(Vec(numBanks, UInt(l.idxW.W)))
+  val d2OvH   = Reg(Bool())
+  val d2OvS   = Reg(UInt(ovfcCntW1.W))
+  val d2OvP   = Reg(UInt(math.max(1, l.ovfcPayW).W))
+  val d2Val   = Reg(Vec(ktBanks, Bool()))
+  val d2FpOk  = Reg(Bool())
+  val d2FpSel = Reg(UInt(l.slotW.W))
+  val d2Hit   = Reg(Bool())                      // !useKt && useAd 时的命中
+  val d2FwH   = Reg(Bool())
+  val d2FwAd  = Reg(UInt(adW.W))
 
   // ---- d3：AD 数据拍（useKt && useAd）----
   val d3V    = RegInit(false.B)
@@ -317,7 +321,7 @@ class ExactMatch(params: EmParams) extends Module {
   val adRdUsed = useAd.B && (if (useKt) d2V else d1V)
   val pipeFree = !htRdUsed && !ktRdUsed && !adRdUsed
 
-  // 时隙等待计时：svc 需要读端口但流水线在占用 → 等够 slotWaitMax 拍就反压抢一拍
+  // 时隙等待计时
   val svcWait  = RegInit(0.U(math.max(1, log2Ceil(params.slotWaitMax + 1)).W))
   val svcWantC = (sState === S_HTREQ) || (sState === S_KTREQ)
   val svcForce = svcWantC && svcWait === params.slotWaitMax.U
@@ -371,29 +375,34 @@ class ExactMatch(params: EmParams) extends Module {
   val sAd    = Reg(UInt(adW.W))
   val sOp    = Reg(UInt(2.W))
   val sIdx   = Reg(Vec(numBanks, UInt(l.idxW.W)))
+  val sFp    = Reg(UInt(fpW.W))
   val sPay   = Reg(Vec(ktBanks, UInt(l.htPayW.W)))
   val sVal   = Reg(Vec(ktBanks, Bool()))
   val sClm   = Reg(Vec(ktBanks, Bool()))
-  val sKt    = Reg(Vec(ktBanks, UInt(l.ktEntryW.W)))
+  val sKtE   = Reg(UInt(l.ktEntryW.W))
   val sFound = RegInit(false.B)
   val sUseOv = RegInit(false.B)
   val sOvSel = Reg(UInt(ovfcCntW1.W))
-  val sSlot  = Reg(UInt(l.slotW.W))
-  val sKtPtr = Reg(UInt(l.ktPtrW.W))
+  val sSlot  = Reg(UInt(l.slotW.W))         // 扁平槽位 b*ways+w
+  val sKtPtr = Reg(UInt(l.ktPtrW.W))        // KT 全局索引
   val sAdPtr = Reg(UInt(l.adPtrW.W))
   val sBest  = Reg(UInt(l.bankW.W))
   val sFreeW = Reg(UInt(l.wayW.W))
-  val sKrBase = RegInit(0.U(l.slotW.W))
+
+  /** 维护：桶内与待查 key 同指纹且 valid 的槽位掩码（插入规则保证至多 1 位） */
+  val sFpMatch = if (useKt) VecInit((0 until ktBanks).map(s => sVal(s) && l.htFp(sPay(s)) === sFp))
+                 else VecInit(Seq(false.B))
+  val sFpHit   = if (useKt) sFpMatch.asUInt.orR else false.B
+  val sFpSel   = PriorityEncoder(sFpMatch)
 
   // =========================================================================
   // 读地址驱动（流水线与 svc 二选一）
   // =========================================================================
-  // HT：r1 拍发起
+  // HT：r1 拍发起（每 bank 独立一次）
   for (b <- 0 until numBanks) {
     htMems(b).io.lgc.raddr := Mux(svcOwns, sIdx(b), r1Idx(b))
     htMems(b).io.lgc.re    := Mux(svcOwns, false.B, htRdUsed)
   }
-  // AgeTable 桶查询：svc 占时隙时由 svc 驱动（svc 在时隙当拍捕获）
   ageTab.io.qIdx := VecInit((0 until numBanks).map(b => Mux(svcOwns, sIdx(b), r1Idx(b))))
 
   /** 当拍 HT 回读数据里、槽位 s 对应的 payload（组合） */
@@ -403,56 +412,69 @@ class ExactMatch(params: EmParams) extends Module {
     word(l.slotWay(s))
   }
 
-  // KT：d1 拍发起（useKt）
-  val svcKtRAddr = VecInit((0 until ktBanks).map(s =>
-    Mux(sUseOv || sTask === T_AGE, sKtPtr, (if (useKt) l.htKtPtr(sPay(s)) else 0.U))))
-  val ktRdAddrV = VecInit((0 until ktBanks).map { s =>
+  // ---- d1：指纹并行比对（纯组合），挑出唯一命中路 ----
+  val d1FpMatch = if (useKt) VecInit((0 until ktBanks).map(s => d1Val(s) && l.htFp(htNow(s.U(l.slotW.W))) === d1Fp))
+                  else VecInit(Seq(false.B))
+  val d1FpSelC  = PriorityEncoder(d1FpMatch)
+  val d1FpOkC   = d1FpMatch.asUInt.orR
+
+  // ---- KT 读地址：OVFC 命中优先，其次指纹命中的那一路（只读 1 路）----
+  val ktRdAddrPipe: UInt =
     if (!useKt) 0.U(l.ktPtrW.W)
-    else Mux(d1OvH, l.ovfcKtPtr(d1OvP), l.htKtPtr(htNow(s.U(l.slotW.W))))
-  })
-  if (useKt) {
-    for (s <- 0 until ktBanks) {
-      ktMems(s).io.lgc.raddr := Mux(svcOwns, svcKtRAddr(s), ktRdAddrV(s))
-      ktMems(s).io.lgc.re    := Mux(svcOwns, false.B, ktRdUsed)
-    }
+    else Mux(d1OvH, d1OvP, Mux(d1FpOkC, l.htKtPtr(htNow(d1FpSelC)), 0.U(l.ktPtrW.W)))
+  // svc 的 KT 读：维护 → 指纹命中槽位；老化 → 被 claim 的槽位
+  val svcKtRAddr: UInt = if (useKt) l.htKtPtr(sPay(sSlot)) else 0.U(l.ktPtrW.W)
+
+  ktMem.foreach { m =>
+    m.io.lgc.raddr := Mux(svcOwns, svcKtRAddr, ktRdAddrPipe)
+    m.io.lgc.re    := Mux(svcOwns, (sState === S_KTREQ), ktRdUsed)
   }
 
   // =========================================================================
   // 比较级（cm 拍）：useKt 时在 d2，否则在 d1
   // =========================================================================
-  val cmV   = if (useKt) d2V else d1V
-  val cmKey = if (useKt) d2Key else d1Key
-  val cmAd  = if (useKt) d2Ad else d1Ad
-  val cmIdx = if (useKt) d2Idx else d1Idx
-  val cmVal = if (useKt) d2Val else d1Val
-  val cmOvH = if (useKt) d2OvH else d1OvH
-  val cmOvS = if (useKt) d2OvS else d1OvS
-  val cmOvP = if (useKt) d2OvP else d1OvP
+  val cmV     = if (useKt) d2V else d1V
+  val cmKey   = if (useKt) d2Key else d1Key
+  val cmAd    = if (useKt) d2Ad else d1Ad
+  val cmIdx   = if (useKt) d2Idx else d1Idx
+  val cmVal   = if (useKt) d2Val else d1Val
+  val cmOvH   = if (useKt) d2OvH else d1OvH
+  val cmOvS   = if (useKt) d2OvS else d1OvS
+  val cmOvP   = if (useKt) d2OvP else d1OvP
 
   // 转发 CAM 比对：与 miss 判定同拍 → 背靠背的下一个请求立刻可见
   fwd.foreach(_.io.lookKey := cmKey)
   val fwdHit = if (learnOn) fwd.get.io.hit else false.B
   val fwdAd  = if (learnOn) fwd.get.io.hitAd else 0.U(adW.W)
 
-  // 表内候选比较
-  val candHitM = if (useKt) VecInit((0 until ktBanks).map(s => cmVal(s) && l.ktKey(ktMems(s).io.lgc.rdata) === cmKey))
-                 else       VecInit((0 until ktBanks).map(s => cmVal(s) && l.htKey(htNow(s.U(l.slotW.W))) === cmKey))
-  val candSel = PriorityEncoder(candHitM)
-  val tblHit  = Mux(cmOvH, true.B, candHitM.asUInt.orR)
-  val selSlot = Mux(cmOvH, ovfcKtSlotOf(cmOvS), candSel)
-  val srcEnt  = if (useKt) VecInit(ktMems.map(_.io.lgc.rdata))(selSlot)
-                else Mux(cmOvH, cmOvP, htNow(selSlot))
+  // ---- 表内命中判定 ----
+  //   useKt : 只有指纹命中的那一条 KT 参与 Full Key 比较（**不是多路 KT 一起比**）
+  //   !useKt: key 内联在 HT payload 里，桶内并行比较
+  val cmHitM = if (!useKt) VecInit((0 until ktBanks).map(s => cmVal(s) && (l.htKey(htNow(s.U(l.slotW.W))) === cmKey)))
+               else VecInit(Seq(false.B))
+  val cmSel  = PriorityEncoder(cmHitM)
+  // !useKt 时没有指纹（key 直接内联），fpOk 恒真、命中槽位取内联比较的结果
+  val cmFpOk  = if (useKt) d2FpOk else true.B
+  val cmFpSel = if (useKt) d2FpSel else cmSel
+  val cmHit: Bool = if (useKt) (cmFpOk && (l.ktKey(ktMem.get.io.lgc.rdata) === cmKey))
+                    else cmHitM.asUInt.orR
+  val tblHit = Mux(cmOvH, true.B, cmHit)
+
+  /** 命中条目的 payload / KT 条目（供取 AD 指针）；useKt 时 OVFC 命中也读的是这一路 KT */
+  val srcEnt: UInt =
+    if (useKt) ktMem.get.io.lgc.rdata
+    else Mux(cmOvH, cmOvP, htNow(cmSel))
   val tblAdPtr = (if (useAd) (if (useKt) l.ktAdPtr(srcEnt) else l.htAdPtr(srcEnt)) else 0.U(1.W))
   val tblAdVal = (if (useAd) 0.U(1.W) else (if (useKt) l.ktAd(srcEnt) else l.htAd(srcEnt)))
   val hit = tblHit || fwdHit
 
   // 命中刷新（只写时间戳，不写 valid → 结构上不可能复活已老化条目）
   val rfOn = if (agingOn) cmV && io.ageEn && tblHit else false.B
-  val rfBk = l.slotBank(selSlot)
+  val rfBk = l.slotBank(cmFpSel)
   ageTab.io.rfEn  := rfOn && !cmOvH
   ageTab.io.rfBk  := rfBk
   ageTab.io.rfIdx := cmIdx(rfBk)
-  ageTab.io.rfWy  := l.slotWay(selSlot)
+  ageTab.io.rfWy  := l.slotWay(cmFpSel)
   if (ovfcEn) {
     when(rfOn && cmOvH) { ovfcT(cmOvS) := now }
   }
@@ -482,7 +504,7 @@ class ExactMatch(params: EmParams) extends Module {
   // r1 无条件跟随 acq；acq 被提交后清零（同拍又接收新请求会再次置位 → 背靠背不丢拍）。
   // ⚠️ 不能在 when(acqV) 里写 r1V := ...，否则 acqV=0 的那些拍 r1V 清不掉，流水线会卡死。
   when(adv) {
-    r1V := acqV; r1Key := acqKey; r1Ad := acqAd; r1Idx := acqIdx
+    r1V := acqV; r1Key := acqKey; r1Ad := acqAd; r1Idx := acqIdx; r1Fp := acqFp
     r1OvH := acqOvH; r1OvS := acqOvS; r1OvP := acqOvP
     when(acqV) { acqV := false.B }
   }
@@ -490,18 +512,23 @@ class ExactMatch(params: EmParams) extends Module {
     acqKey := io.key.bits
     acqAd  := io.learnAd
     acqOvH := lkOvHitC; acqOvS := lkOvSelC; acqOvP := ovfcPay(lkOvSelC)
-    if (useSerial) { lkCrc.get.io.start := true.B; lkCrc.get.io.din := io.key.bits; crcRun := true.B }
-    else { acqIdx := slices(hardHash(io.key.bits)); acqV := true.B }
+    if (useSerial) {
+      lkCrc.get.io.start := true.B; lkCrc.get.io.din := io.key.bits; crcRun := true.B
+    } else {
+      val h = hardHash(io.key.bits)
+      acqIdx := slices(h); acqFp := l.fpOf(h); acqV := true.B
+    }
   }
   if (useSerial) {
     when(crcRun && lkCrc.get.io.done) {
-      acqIdx := slices(lkCrc.get.io.out); acqV := true.B; crcRun := false.B
+      val h = lkCrc.get.io.out
+      acqIdx := slices(h); acqFp := l.fpOf(h); acqV := true.B; crcRun := false.B
     }
   }
 
   when(adv) {
-    // r1 → d1（metadata 影子；valid 位图在此拍从 AgeTable 组合读出）
-    d1V := r1V; d1Key := r1Key; d1Ad := r1Ad; d1Idx := r1Idx
+    // r1 → d1：metadata 影子 + 指纹比对结果（AgeTable 的 valid 位图在 r1 拍组合读出）
+    d1V := r1V; d1Key := r1Key; d1Ad := r1Ad; d1Idx := r1Idx; d1Fp := r1Fp
     d1OvH := r1OvH; d1OvS := r1OvS; d1OvP := r1OvP
     for (b <- 0 until numBanks) {
       for (w <- 0 until ways) { d1Val(b * ways + w) := ageTab.io.qEnt(b)(w)(0) }
@@ -510,6 +537,8 @@ class ExactMatch(params: EmParams) extends Module {
     if (useKt) {
       d2V := d1V; d2Key := d1Key; d2Ad := d1Ad; d2Idx := d1Idx
       d2OvH := d1OvH; d2OvS := d1OvS; d2OvP := d1OvP; d2Val := d1Val
+      // 用 d1 拍当拍的组合比对结果（此时 d1Val 已是本请求的 valid 位）
+      d2FpOk := d1FpOkC; d2FpSel := d1FpSelC
     } else if (useAd) {
       d2V := d1V; d2Hit := tblHit; d2FwH := fwdHit; d2FwAd := fwdAd
     }
@@ -540,18 +569,19 @@ class ExactMatch(params: EmParams) extends Module {
 
   def useOvNow(k: UInt): (Bool, UInt) = if (ovfcEn) ovfcMatch(k) else (false.B, 0.U(1.W))
 
-  // 启动一次维护/学习任务：命中 OVFC 就直接去读它的 KT，否则先读 HT 桶
+  /** 启动一次维护/学习任务：命中 OVFC 就直接用它的 KT 指针，否则先读 HT 桶 */
   def startTask(k: UInt, a: UInt, op: UInt, task: UInt): Unit = {
     sKey := k; sAd := a; sOp := op; sTask := task
     val ovm = useOvNow(k)
     sUseOv := ovm._1; sOvSel := ovm._2
     if (useSerial) { svCrc.get.io.start := true.B; svCrc.get.io.din := k; sState := S_HASH }
     else {
+      val h = hardHash(k)
+      sIdx := slices(h); sFp := l.fpOf(h)
       when(ovm._1) {
-        sSlot := ovfcKtSlotOf(ovm._2); sKtPtr := ovfcKtPtrOf(ovm._2)
+        sKtPtr := ovfcPay(ovm._2)
         sState := Mux(useKt.B, S_KTREQ, S_DEC)
       }.otherwise {
-        sIdx := slices(hardHash(k))
         sState := S_HTREQ
       }
     }
@@ -563,7 +593,7 @@ class ExactMatch(params: EmParams) extends Module {
       sUseOv := agOv
       sOvSel := agOvSel
       when(agOv) {
-        sSlot := ovfcKtSlotOf(agOvSel); sKtPtr := ovfcKtPtrOf(agOvSel)
+        sKtPtr := ovfcPay(agOvSel)
         sState := Mux(useKt.B, S_KTREQ, S_AGFR)
       }.otherwise {
         for (b <- 0 until numBanks) { sIdx(b) := agIdx }
@@ -578,13 +608,12 @@ class ExactMatch(params: EmParams) extends Module {
   if (useSerial) {
     when(sState === S_HASH) {
       when(svCrc.get.io.done) {
-        sIdx := slices(svCrc.get.io.out)
+        val h = svCrc.get.io.out
+        sIdx := slices(h); sFp := l.fpOf(h)
         val ovm = useOvNow(sKey)
         sUseOv := ovm._1; sOvSel := ovm._2
-        when(ovm._1) {
-          sSlot := ovfcKtSlotOf(ovm._2); sKtPtr := ovfcKtPtrOf(ovm._2)
-          sState := Mux(useKt.B, S_KTREQ, S_DEC)
-        }.otherwise { sState := S_HTREQ }
+        when(ovm._1) { sKtPtr := ovfcPay(ovm._2); sState := Mux(useKt.B, S_KTREQ, S_DEC) }
+        .otherwise { sState := S_HTREQ }
       }
     }
   }
@@ -605,47 +634,57 @@ class ExactMatch(params: EmParams) extends Module {
       val rd = htMems(b).io.lgc.rdata.asTypeOf(Vec(ways, UInt(l.htPayW.W)))
       for (w <- 0 until ways) { sPay(b * ways + w) := rd(w) }
     }
+    sState := S_HTD        // 决策放到下一拍，此时 sPay 已是本桶数据
+  }
+
+  // ---- S_HTD：用刚捕获的桶数据（sPay/sVal）做判断 ----
+  when(sState === S_HTD) {
     when(sTask === T_AGE) {
-      sSlot  := l.slotBank(agSlot)
+      // 老化：拿被 claim 那一槽的 payload → KT 指针
+      sSlot  := agSlot
       sKtPtr := (if (useKt) l.htKtPtr(sPay(agSlot)) else 0.U(l.ktPtrW.W))
       sState := Mux(useKt.B, S_KTREQ, S_AGFR)
     }.otherwise {
-      sState := Mux(useKt.B, S_KTREQ, S_DEC)
+      // 维护：先看指纹有没有命中 —— 没命中说明 key 不在 HT，省掉这次 KT 读
+      if (useKt) {
+        when(sFpHit) { sSlot := sFpSel; sState := S_KTREQ }
+        .otherwise   { sState := S_DEC }
+      } else { sState := S_DEC }
     }
   }
 
   if (useKt) {
     when(sState === S_KTW) {
-      for (s <- 0 until ktBanks) { sKt(s) := ktMems(s).io.lgc.rdata }
+      sKtE := ktMem.get.io.lgc.rdata
       sState := Mux(sTask === T_AGE, S_AGFR, S_DEC)
     }
   }
 
   // ---- 维护判定 ----
+  // 注意：htHitM 只能在 !useKt 时构造（l.htKey 带 require(!useKt)，elaboration 期会检查）。
   when(sState === S_DEC) {
-    val hitM = VecInit((0 until ktBanks).map { s =>
-      sVal(s) && !sClm(s) && (if (useKt) l.ktKey(sKt(s)) === sKey else l.htKey(sPay(s)) === sKey)
-    })
-    val sel = PriorityEncoder(hitM)
-    val adpOf: UInt => UInt = (sl: UInt) => {
-      if (!useAd) 0.U(1.W)
-      else if (useKt) l.ktAdPtr(sKt(sl))
-      else l.htAdPtr(sPay(sl))
-    }
+    val found: Bool =
+      if (useKt) sFpHit && (l.ktKey(sKtE) === sKey)   // 只比指纹命中的那一条 Full Key
+      else VecInit((0 until ktBanks).map(s => sVal(s) && l.htKey(sPay(s)) === sKey)).asUInt.orR
+    val sel: UInt = if (useKt) sFpSel else PriorityEncoder(
+      VecInit((0 until ktBanks).map(s => sVal(s) && l.htKey(sPay(s)) === sKey)))
     when(sUseOv) {
       sFound := true.B
       if (useAd) {
-        val a = if (useKt) l.ktAdPtr(sKt(sSlot))
+        val a = if (useKt) l.ktAdPtr(sKtE)
                 else if (ovfcEn) l.htAdPtr(ovfcP(sOvSel))
                 else 0.U(1.W)
         sAdPtr := a
       }
       sState := Mux(sOp === EmOp.del, S_FREE, S_WR)
-    }.elsewhen(hitM.asUInt.orR) {
+    }.elsewhen(found) {
       sFound := true.B
-      sSlot  := sel
-      sKtPtr := (if (useKt) l.htKtPtr(sPay(sel)) else 0.U(l.ktPtrW.W))
-      if (useAd) { sAdPtr := adpOf(sel) }
+      if (useKt) { sKtPtr := l.htKtPtr(sPay(sFpSel)) }
+      sSlot := sel
+      if (useAd) {
+        val a = if (useKt) l.ktAdPtr(sKtE) else l.htAdPtr(sPay(sel))
+        sAdPtr := a
+      }
       sState := Mux(sOp === EmOp.del, S_FREE, S_WR)
     }.elsewhen(sOp === EmOp.del) {
       sFound := false.B
@@ -661,11 +700,14 @@ class ExactMatch(params: EmParams) extends Module {
   }
 
   // ---- d-left 选路 + FreeList 分配 ----
-  val allocSlotW = Wire(UInt(l.slotW.W))
-  val allocWill  = Wire(Bool())
+  // 插入规则：候选槽位里已有同指纹条目（sFpHit）时，整个 HT 都不能放这条 key，
+  // 否则后续查找会撞上别人的指纹 → 直接落 OVFC（OVFC 用全 key 比较，精确）。
+  val allocWill = Wire(Bool())
   allocWill := false.B
-  allocSlotW := 0.U
   when(sState === S_ALLOC) {
+    val fpClash = sFpHit
+    when(fpClash) { cntFpClash := cntFpClash + 1.U }
+
     val occ = VecInit((0 until numBanks).map { b =>
       PopCount(VecInit((0 until ways).map(w => sVal(b * ways + w) || sClm(b * ways + w))).asUInt)
     })
@@ -696,29 +738,21 @@ class ExactMatch(params: EmParams) extends Module {
         order(PriorityEncoder(VecInit(order.map(i => minMask(i)))))
       }
     val freeMask = VecInit((0 until ways).map(w => !(sVal(bestBank * ways.U + w.U) || sClm(bestBank * ways.U + w.U))))
-    val htFree   = freeMask.asUInt.orR
+    val htFree   = !fpClash && freeMask.asUInt.orR
     val htSlot   = bestBank * ways.U + PriorityEncoder(freeMask)
-
-    val ovOrder = VecInit((0 until ktBanks).map { k =>
-      val s = sKrBase +& k.U(l.slotW.W)
-      Mux(s >= ktBanks.U, s - ktBanks.U, s)(l.slotW - 1, 0)
-    })
-    val ovOk   = if (useKt) VecInit(ovOrder.map(s => VecInit(ktFrees.map(_.io.ok))(s))) else VecInit(Seq(false.B))
-    val ovSlot = ovOrder(PriorityEncoder(ovOk))
 
     sUseOv := !htFree
     sBest  := bestBank
     sFreeW := PriorityEncoder(freeMask)
-    sSlot  := Mux(htFree, htSlot, ovSlot)
+    sSlot  := htSlot
     if (ovfcEn) { when(!htFree) { sOvSel := ovfcFreeSel } }
 
-    allocWill  := htFree || ovfcHasFree
-    allocSlotW := Mux(htFree, htSlot, ovSlot)
+    allocWill := htFree || ovfcHasFree
 
-    val ktOk = (if (useKt) VecInit(ktFrees.map(_.io.ok))(allocSlotW) else true.B)
+    val ktOk = ktFree.map(_.io.ok).getOrElse(true.B)
     val adOk = adFree.map(_.io.ok).getOrElse(true.B)
     when(allocWill && ktOk && adOk) {
-      sKtPtr := (if (useKt) VecInit(ktFrees.map(_.io.addr))(allocSlotW) else 0.U(l.ktPtrW.W))
+      ktFree.foreach(f => sKtPtr := f.io.addr)
       adFree.foreach(f => sAdPtr := f.io.addr)
       sState := S_WR
     }.otherwise {
@@ -726,10 +760,8 @@ class ExactMatch(params: EmParams) extends Module {
       cntInsFail := cntInsFail + 1.U
     }
   }
-  if (useKt) {
-    for (s <- 0 until ktBanks) { ktFrees(s).io.alloc := allocWill && (allocSlotW === s.U) }
-  }
-  adFree.foreach(_.io.alloc := allocWill)
+  ktFree.foreach(_.io.alloc := (sState === S_ALLOC) && allocWill)
+  adFree.foreach(_.io.alloc := (sState === S_ALLOC) && allocWill)
 
   // =========================================================================
   // svc 写口
@@ -737,7 +769,8 @@ class ExactMatch(params: EmParams) extends Module {
   val wrEn   = sState === S_WR
   val wrBank = Mux(sFound, l.slotBank(sSlot), sBest)
   val wrWay  = Mux(sFound, l.slotWay(sSlot), sFreeW)
-  val insPay = if (useKt) sKtPtr else if (useAd) Cat(sAdPtr, sKey) else Cat(sAd, sKey)
+  // 新插入：HT 负载 = {指纹, KT 指针}；命中覆盖：负载不变（除 !useKt&&!useAd 的内联 AD）
+  val insPay = if (useKt) Cat(sFp, sKtPtr) else if (useAd) Cat(sAdPtr, sKey) else Cat(sAd, sKey)
   val hitPay = if (!useKt && !useAd) Cat(sAd, l.htKey(sPay(sSlot))) else sPay(sSlot)
   val wrPay  = Mux(sFound, hitPay, insPay)
   val htWrEn = wrEn && !sUseOv && (!sFound || (!useKt.B && !useAd.B))
@@ -749,14 +782,11 @@ class ExactMatch(params: EmParams) extends Module {
     htMems(b).io.lgc.wdata := wdata.asUInt
   }
 
-  if (useKt) {
+  ktMem.foreach { m =>
     val ktWrEn = wrEn && (!sFound || !useAd.B)
-    val ktEnt  = l.ktEntry(sKey, (if (useAd) sAdPtr else sAd))
-    for (s <- 0 until ktBanks) {
-      ktMems(s).io.lgc.we    := ktWrEn && (sSlot === s.U)
-      ktMems(s).io.lgc.waddr := sKtPtr
-      ktMems(s).io.lgc.wdata := ktEnt
-    }
+    m.io.lgc.we    := ktWrEn
+    m.io.lgc.waddr := sKtPtr
+    m.io.lgc.wdata := l.ktEntry(sKey, (if (useAd) sAdPtr else sAd))
   }
 
   adMem.foreach { m =>
@@ -775,12 +805,9 @@ class ExactMatch(params: EmParams) extends Module {
       ovfcV(sOvSel) := true.B
       ovfcC(sOvSel) := false.B
       ovfcK(sOvSel) := sKey
-      ovfcP(sOvSel) := (if (useKt) Cat(sSlot, sKtPtr) else if (useAd) sAdPtr else sAd)
+      ovfcP(sOvSel) := (if (useKt) sKtPtr else if (useAd) sAdPtr else sAd)
       ovfcT(sOvSel) := now
-      when(!sFound) {
-        ovfcUseCnt := ovfcUseCnt + 1.U
-        sKrBase := Mux(sKrBase === (ktBanks - 1).U, 0.U, sKrBase + 1.U)
-      }
+      when(!sFound) { ovfcUseCnt := ovfcUseCnt + 1.U }
     }
   }
 
@@ -791,24 +818,18 @@ class ExactMatch(params: EmParams) extends Module {
   val agFr    = sState === S_AGFR
   val relEn   = freeKey || agFr
 
-  val ktRelSlot = Mux(agFr, Mux(agOv, sSlot, l.slotBank(agSlot)), sSlot)
-  val ktRelPtr  = Mux(agFr,
-    Mux(agOv, sKtPtr, (if (useKt) l.htKtPtr(sPay(agSlot)) else 0.U(l.ktPtrW.W))),
-    sKtPtr)
+  val ktRelPtr: UInt =
+    if (!useKt) 0.U(1.W)
+    else Mux(agFr, l.htKtPtr(sPay(agSlot)), sKtPtr)
   val adRelPtr: UInt =
     if (!useAd) 0.U(1.W)
     else Mux(agFr,
       Mux(agOv,
-        (if (useKt) l.ktAdPtr(sKt(sSlot)) else if (ovfcEn) ovfcP(agOvSel) else 0.U(1.W)),
-        (if (useKt) l.ktAdPtr(sKt(agSlot)) else l.htAdPtr(sPay(agSlot)))),
+        (if (useKt) l.ktAdPtr(sKtE) else if (ovfcEn) ovfcP(agOvSel) else 0.U(1.W)),
+        (if (useKt) l.ktAdPtr(sKtE) else l.htAdPtr(sPay(agSlot)))),
       sAdPtr)
 
-  if (useKt) {
-    for (s <- 0 until ktBanks) {
-      ktFrees(s).io.free  := relEn && (ktRelSlot === s.U)
-      ktFrees(s).io.faddr := ktRelPtr
-    }
-  }
+  ktFree.foreach { f => f.io.free := relEn; f.io.faddr := ktRelPtr }
   adFree.foreach { f => f.io.free := relEn; f.io.faddr := adRelPtr }
 
   ageTab.io.clrEn  := (freeKey && !sUseOv) || (agFr && !agOv)
@@ -837,8 +858,6 @@ class ExactMatch(params: EmParams) extends Module {
     // 转发 CAM 的弹出要**延迟 2 拍**，不能与 S_WR 同拍：
     //   HT 写在 T 拍落盘（T→T+1 边沿生效），所以在 T-1/T 拍发起 HT 读的请求拿到的是**旧数据**，
     //   它们的比较级分别在 T+1 / T+2 拍；若在 T 拍就弹出 CAM，这些请求会丢掉本应转发来的命中。
-    //   延迟 2 拍后（CAM 从 T+3 起为空）覆盖全部在途请求；而 svc 完成两次插入至少间隔 7 拍，
-    //   因此单个 pending 计数器足够，不会重叠。
     val popPend = RegInit(false.B)
     val popCnt  = RegInit(0.U(3.W))
     when((sState === S_WR) && (sTask === T_LRN)) { popPend := true.B; popCnt := 2.U }
@@ -847,15 +866,13 @@ class ExactMatch(params: EmParams) extends Module {
     }
     fwd.get.io.pop := popPend && (popCnt === 0.U)
   }
+
   when(sState === S_WR) {
     when(!sFound) { entryCnt := entryCnt + 1.U }
     when(sTask === T_LRN) { cntLearn := cntLearn + 1.U }.otherwise { cntInsert := cntInsert + 1.U }
     sState := S_IDLE
   }
 
-  // =========================================================================
-  // 临时调试：把比较级信息随响应打一拍，便于 testbench 观测
-  // =========================================================================
   // =========================================================================
   // 状态输出
   // =========================================================================
@@ -866,9 +883,10 @@ class ExactMatch(params: EmParams) extends Module {
   io.status.learn     := cntLearn
   io.status.ageDrop   := cntAgeDrop
   io.status.learnDrop := cntLrnDrop
+  io.status.fpClash   := cntFpClash
   io.status.ovfcUse   := ovfcUseCnt
   io.status.fwdUse    := (if (learnOn) fwd.get.io.count else 0.U(fwdCntW.W))
-  io.status.ktFree    := (if (useKt) ktFrees.map(f => f.io.count.asUInt).reduce(_ +& _) else 0.U)
+  io.status.ktFree    := ktFree.map(f => f.io.count.asUInt).getOrElse(0.U)
   io.status.adFree    := adFree.map(f => f.io.count.asUInt).getOrElse(0.U)
   io.status.lkBusy    := acqV || r1V || d1V
   io.status.mtBusy    := sState =/= S_IDLE
