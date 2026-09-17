@@ -23,6 +23,7 @@
 | [11_Area.md](11_Area.md) | `Area/` | `BaseCbb.Area` |
 | [12_Clos.md](12_Clos.md) | `Clos/` | `BaseCbb.Clos` |
 | [13_RegCbb.md](13_RegCbb.md) | `RegCbb/` | `BaseCbb.RegCbb(.dsl/.hw/.gen/.demo)` |
+| [14_em.md](14_em.md) | `em/`（在 `src/main/scala/BaseCbb/em`） | `em`（EM 查表引擎，含功能符合性检查） |
 
 ---
 
