@@ -10,9 +10,14 @@ import scala.sys.process._
 //
 //   sbt "em/runMain em.EmGen <outDir> <preset>"
 //
-// 流程（chisel 5）：ChiselStage 发射 CHIRRTL（.fir）→ firtool --verilog 出
-// 纯 Verilog（给 iverilog 用；chisel5 只有 SystemVerilog 目标）。
+// 流程（chisel 5）：ChiselStage 发射 CHIRRTL（.fir）→ firtool --verilog 出纯 Verilog。
 // firtool 从 PATH 或 firtool-resolver 缓存里取。
+//
+// ⚠️ 产出的 Verilog 用 **Verilator** 仿真（`verilator --binary --timing --trace ...`）。
+//   **iverilog 编不过**：AgeTable / FreeList 这类寄存器阵列被 firtool 展成"连续赋值里对
+//   数组做变量下标读"，iverilog 要求那里必须是常量下标（实测 11 个 elaboration error）。
+//   firtool 的 `disallowLocalVariables` 仍然要带：否则函数内变量生成 `automatic`，
+//   iverilog/部分工具链会报 unsupported。
 // ===========================================================================
 object EmGen {
 

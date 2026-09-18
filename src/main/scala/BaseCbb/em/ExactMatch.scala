@@ -559,16 +559,19 @@ class ExactMatch(params: EmParams) extends Module {
     }
   }
 
+  // rsp.valid 必须"每个请求恰好一拍"：svc 抢时隙会把整条流水线冻结（adv=0），
+  // 此时停在 d3 的请求会一直保持 valid —— 消费方按 valid 计数就会把一个请求算成多个响应。
+  // 用 adv 门控：被冻结的那拍不报，解冻后补一拍（响应被顺延，但不会重复）。
   if (useAd) {
     if (useKt) {
-      io.rsp.valid := d3V
+      io.rsp.valid := d3V && adv
       io.rsp.bits  := Cat(d3Hit || d3FwH, Mux(d3FwH, d3FwAd, adMem.get.io.lgc.rdata))
     } else {
-      io.rsp.valid := d2V
+      io.rsp.valid := d2V && adv
       io.rsp.bits  := Cat(d2Hit || d2FwH, Mux(d2FwH, d2FwAd, adMem.get.io.lgc.rdata))
     }
   } else {
-    io.rsp.valid := cmV
+    io.rsp.valid := cmV && adv
     io.rsp.bits  := Cat(hit, Mux(fwdHit, fwdAd, tblAdVal))
   }
 

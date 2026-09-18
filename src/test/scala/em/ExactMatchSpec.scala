@@ -193,6 +193,12 @@ class ExactMatchSpec extends AnyFlatSpec with Matchers {
         rsp(1)._1 shouldBe true
         rsp(1)._2 shouldBe PORT
       }
+      // 响应必须"每个请求恰好一拍"：自学习插入会抢时隙冻结流水线，
+      // 若不门控 adv，停在 d3 的响应会被保持多拍 → 下游把一个请求数成多个响应。
+      // （这条是 review 波形时发现的：rsp_valid 有一次连高 3 拍）
+      var extra = 0
+      for (_ <- 0 until 20) { dut.clock.step(1); if (dut.io.rsp.valid.peek().litValue == 1) extra += 1 }
+      withClue("出现多余响应拍：同一请求被重复上报 ") { extra shouldBe 0 }
       dut.io.learnEn.poke(false.B)
     }
   }
