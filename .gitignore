@@ -18,6 +18,8 @@ build/
 # 例外：rtl/ 下的 .v 是手写源码（参考 RTL 归档），不是生成物，必须入库
 # 注意：否定规则必须排在 *.v 之后才生效
 !rtl/**
+# tools/em_tb 下的 .v 是手写 testbench（不是生成物），同样入库
+!tools/em_tb/*.v
 
 # 大体积参考资料（按需放 docs/ 并手动 git add -f）
 *-飞书云文档.html

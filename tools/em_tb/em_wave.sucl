@@ -1,0 +1,59 @@
+# EM（tb 预设）波形 review 预设视图
+#
+# 用法：surfer --command-file tools/em_tb/em_wave.sucl out/em_tb/em_tb.fst
+# 命令语法见 https://docs.surfer-project.org/book/commands/index.html
+# ⚠️ divider_add 的 NAME 必须是单个 token：带空格或标点（实测 · 也不行）会报 ExtraParameters
+# （命令文件扩展名约定 .sucl；每行一条命令，空行与 # 注释会被忽略）
+
+# 只显示叶子名，列表更紧凑（唯一性靠顺序分组保证）
+variable_force_name_type Local
+
+divider_add 时钟与复位
+variable_add tb.clock
+variable_add tb.reset
+variable_add tb.memInit
+variable_add tb.memInitDone
+
+divider_add 寄存器握手
+variable_add tb.key_valid
+variable_add tb.key_ready
+variable_add tb.key_bits
+variable_add tb.rsp_valid
+variable_add tb.rsp_bits
+variable_add tb.wr_valid
+variable_add tb.wr_ready
+variable_add tb.wr_op
+
+divider_add 查找流水线
+variable_add tb.dut.acqV
+variable_add tb.dut.r1V
+variable_add tb.dut.d1V
+variable_add tb.dut.d2V
+variable_add tb.dut.d3V
+variable_add tb.dut.d1Val_0
+variable_add tb.dut.d1Val_1
+variable_add tb.dut.d1Val_2
+variable_add tb.dut.d1Val_3
+variable_add tb.dut.d1FpSelC
+variable_add tb.dut.tblHit
+
+divider_add svc引擎
+variable_add tb.dut.sState
+variable_add tb.dut.svcOwns
+variable_add tb.dut.agPend
+variable_add tb.dut.ovScIdx
+variable_add tb.dut.ovfcUseCnt
+
+divider_add 计数与状态
+variable_add tb.st_entries
+variable_add tb.st_insert
+variable_add tb.st_insFail
+variable_add tb.st_ageDrop
+variable_add tb.st_learn
+variable_add tb.st_fpClash
+variable_add tb.st_ovfcUse
+variable_add tb.st_fwdUse
+variable_add tb.st_ktFree
+variable_add tb.st_adFree
+
+zoom_fit
