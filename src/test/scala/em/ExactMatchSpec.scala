@@ -256,6 +256,37 @@ class ExactMatchSpec extends AnyFlatSpec with Matchers {
   }
 
   // =========================================================================
+  // CrcRuntime（运行时可配串行 CRC）模式：覆盖"查找 + 维护"两条串行哈希路径
+  //   —— 这条用例正是用来兜 CrcSerial 的 done/out 对齐与 refin 喂位顺序的
+  // =========================================================================
+  "CrcRuntime 模式" should "串行 CRC 下 add/lookup/del 都正确" in {
+    val p = EmParams(
+      keyWidth = 16, adWidth = 26, htDepth = 8, htWays = 2, numBanks = 1,
+      dLeftTie = TiePolicy.RoundRobin, ktDepth = 16, adDepth = 16,
+      useKt = true, useAd = true, crc = CrcRuntime.crc32
+    )
+    val l = EmLayout(p)
+    simulate(new ExactMatch(p)) { dut =>
+      initDut(dut)
+      // CrcRuntime 模式必须先由 CSR 写好 poly/init/xor —— 否则 poly=0 会让 CRC 恒为 0、
+      // 所有 key 挤进同一个桶（既是测试要做的初始化，也是真实的软件约束）
+      dut.io.crcPoly.poke(BigInt("04C11DB7", 16).U)
+      dut.io.crcInit.poke(BigInt("FFFFFFFF", 16).U)
+      dut.io.crcXor.poke(BigInt("FFFFFFFF", 16).U)
+      val ks = Seq(0x0A0B, 0x1000, 0x1234).map(BigInt(_))
+      ks.zipWithIndex.foreach { case (k, i) => wrCmd(dut, OP_ADD, k, BigInt(0x200 + i)) }
+      entries(dut) shouldBe BigInt(3)
+      ks.zipWithIndex.foreach { case (k, i) =>
+        withClue(f"key=0x$k%04X: ")(lookup(dut, l, k) shouldBe ((true, BigInt(0x200 + i))))
+      }
+      lookup(dut, l, BigInt(0x0A0C))._1 shouldBe false
+      wrCmd(dut, OP_DEL, ks.head, BigInt(0))
+      lookup(dut, l, ks.head)._1 shouldBe false
+      entries(dut) shouldBe BigInt(2)
+    }
+  }
+
+  // =========================================================================
   // 指纹冲突：验证"只读 1 路 KT"依然精确（不误报 miss）
   //
   // 设计要点：插入时若候选槽位里已有同指纹条目 → 本次不进 HT

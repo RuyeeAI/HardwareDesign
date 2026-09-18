@@ -160,6 +160,17 @@ class ExactMatch(params: EmParams) extends Module {
       driveAux(m); Some(m)
     } else None
 
+  // 流水线按"发起读的下一拍捕获"硬编码（rdLat=1）。换 Memory 配置（flopIn/flopOut/CheckOut）
+  // 会改变读延迟，届时必须同步插入流水级，否则数据与 metadata 会**静默错位**。
+  // 这里在 elaboration 期直接拦住，不靠仿真碰运气。
+  private def latOf(w: Int, d: Int): Int = {
+    val m = memCfg("latProbe", w, d)
+    m.latency + (if (m.CheckOut) 1 else 0)
+  }
+  require(latOf(l.htWordW, l.bankDepth) == 1, "HT 读延迟必须为 1 拍，当前为 " + latOf(l.htWordW, l.bankDepth))
+  require(latOf(l.ktEntryW, l.ktDepthReal) == 1, "KT 读延迟必须为 1 拍，当前为 " + latOf(l.ktEntryW, l.ktDepthReal))
+  require(latOf(l.adW, params.adDepth) == 1, "AD 读延迟必须为 1 拍，当前为 " + latOf(l.adW, params.adDepth))
+
   private val memReady = htMems.map(_.io.dfx.initDone).reduce(_ && _) &&
     ktMem.map(_.io.dfx.initDone).getOrElse(true.B) &&
     adMem.map(_.io.dfx.initDone).getOrElse(true.B) && !io.memInit
@@ -169,8 +180,8 @@ class ExactMatch(params: EmParams) extends Module {
   // CRC / 哈希
   // =========================================================================
   val useSerial = params.crc.isInstanceOf[CrcRuntime]
-  val lkCrc = if (useSerial) Some(Module(new CrcSerial(l.crcW, keyW))) else None
-  val svCrc = if (useSerial) Some(Module(new CrcSerial(l.crcW, keyW))) else None
+  val lkCrc = if (useSerial) Some(Module(new CrcSerial(l.crcW, keyW, params.crc.refin, params.crc.refout))) else None
+  val svCrc = if (useSerial) Some(Module(new CrcSerial(l.crcW, keyW, params.crc.refin, params.crc.refout))) else None
   Seq(lkCrc, svCrc).flatten.foreach { m =>
     m.io.start := false.B
     m.io.din   := 0.U
