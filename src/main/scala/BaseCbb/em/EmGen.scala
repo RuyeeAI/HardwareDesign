@@ -77,6 +77,8 @@ object EmGen {
       s"aging=${p.aging.isDefined} learning=${p.learning.isDefined} protect=${p.memProtect}")
     println(s"[em]   HT负载=${l.htPayW}b（指纹 ${l.fpW}b + KT指针 ${l.ktPtrW}b）  KT条目=${l.ktEntryW}b  " +
       s"老化条目=${l.ageEntryW}b  查找延迟=${l.lookupLatency}拍（II=1，CrcHardwired 下）")
+    println(s"[em]   存储读延时=${l.rdLat}拍（flopIn=${p.memFlopIn} flopOut=${p.memFlopOut} " +
+      s"CheckIn=${p.memCheckIn} CheckOut=${p.memCheckOut}）")
 
     val dir = s"$outDir/$name"
     // 1) CHIRRTL

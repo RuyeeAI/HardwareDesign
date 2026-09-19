@@ -46,6 +46,13 @@ object EmOp {
   val upd = 2.U(2.W)   // 更新（不存在则记失败）
 }
 
+/** UE（存储读出不可纠错误）来源编码，对应 `EmIo.memUErrSrc` */
+object EmUErrSrc {
+  val ht = 0.U(2.W)   // HT 桶字（指纹/KT 指针）不可纠
+  val kt = 1.U(2.W)   // KT Full Key 不可纠
+  val ad = 2.U(2.W)   // AD 动作数据不可纠
+}
+
 class EmWrCmd(l: EmLayout) extends Bundle {
   val op  = UInt(2.W)
   val key = UInt(l.keyW.W)
@@ -68,6 +75,7 @@ class EmStatus(l: EmLayout) extends Bundle {
   val adFree    = UInt(log2Ceil(l.p.adDepth + 1).W)
   val lkBusy    = Bool()       // 查找流水线非空
   val mtBusy    = Bool()       // svc 引擎非空闲
+  val uerrCnt   = UInt(16.W)   // 存储读出不可纠错误（UE）次数：查找 + 维护合计
 }
 
 class EmIo(l: EmLayout) extends Bundle {
@@ -89,6 +97,17 @@ class EmIo(l: EmLayout) extends Bundle {
   val crcXor  = Input(UInt(l.crcW.W))
   // ---- 状态与统计 ----
   val status = Output(new EmStatus(l))
+  // ---- 存储不可纠错误（UE）上报 ----
+  // memUErr 单拍脉冲；memUErrSrc 给出是 HT/KT/AD 哪张表（见 EmUErrSrc）。
+  // 该脉冲与"这一拍上报的响应"同拍：遇到 UE 的请求会被**强制判 miss**（ad 一并清零），
+  // 所以消费方不需要额外的 error 位 —— 看到脉冲就知道刚刚那个 miss 是"因为存储坏了"。
+  val memUErr    = Output(Bool())
+  val memUErrSrc = Output(UInt(2.W))
+  // ---- 存储 UE 注入（DFX / RAS 验证用，正常工作时恒 0）----
+  // 语义同 MemoryDfxPort.injUerrEn：在"发起读"那一拍拉高，就让该次读报不可纠错误。
+  // injUerrSrc 选中注入到哪张表（见 EmUErrSrc）；只有注入源匹配的表会报错。
+  val injUerrEn  = Input(Bool())
+  val injUerrSrc = Input(UInt(2.W))
 }
 
 class ExactMatch(params: EmParams) extends Module {
@@ -124,15 +143,18 @@ class ExactMatch(params: EmParams) extends Module {
     depth      = depth,
     memoryType = MemoryAccessType.TP,
     protect    = params.memProtect,
-    flopIn     = false,
-    flopOut    = false,
-    CheckIn    = false,
-    CheckOut   = false,
+    // 四个插拍由 EmParams 参数化（默认全 false → 读延时 1 拍）。
+    // 打开后读延时变长，流水线的影子寄存器会自动跟着延（见下面的 shadow）。
+    flopIn     = params.memFlopIn,
+    flopOut    = params.memFlopOut,
+    CheckIn    = params.memCheckIn,
+    CheckOut   = params.memCheckOut,
     RsAccess   = false,
     initValue  = MemoryInitType.AllZero
   )
 
-  private def driveAux(m: TpMemoryWrap3): Unit = {
+  /** 只接维护/初始化/注入这些"旁路"信号；读写数据通路在下面单独接。 */
+  private def driveAux(m: TpMemoryWrap3, injSel: UInt): Unit = {
     m.io.cpu.we    := false.B
     m.io.cpu.re    := false.B
     m.io.cpu.addr  := 0.U
@@ -140,41 +162,85 @@ class ExactMatch(params: EmParams) extends Module {
     m.io.cpuCfg.idleCycleTh0 := 0.U
     m.io.dfx.init  := io.memInit
     m.io.dfx.injCorrEn := false.B
-    m.io.dfx.injUerrEn := false.B
+    // UE 注入：injUerrSrc 选中哪张表就注到哪张（见 EmUErrSrc）
+    m.io.dfx.injUerrEn := io.injUerrEn && (io.injUerrSrc === injSel)
   }
 
   val htMems = Seq.tabulate(numBanks) { b =>
     // 宽度必须是**整桶字** htWordW = htPayW*ways：HT 一次读一整桶，ways 条 payload 拼成一个字
     val m = Module(new TpMemoryWrap3(memCfg(s"EmHt$b", l.htWordW, l.bankDepth)))
-    driveAux(m); m
+    driveAux(m, EmUErrSrc.ht); m
   }
   // KT 单实例（每次查找只读 1 路）
   val ktMem: Option[TpMemoryWrap3] =
     if (useKt) {
       val m = Module(new TpMemoryWrap3(memCfg("EmKt", l.ktEntryW, l.ktDepthReal)))
-      driveAux(m); Some(m)
+      driveAux(m, EmUErrSrc.kt); Some(m)
     } else None
   val adMem: Option[TpMemoryWrap3] =
     if (useAd) {
       val m = Module(new TpMemoryWrap3(memCfg("EmAd", l.adW, params.adDepth)))
-      driveAux(m); Some(m)
+      driveAux(m, EmUErrSrc.ad); Some(m)
     } else None
 
-  // 流水线按"发起读的下一拍捕获"硬编码（rdLat=1）。换 Memory 配置（flopIn/flopOut/CheckOut）
-  // 会改变读延迟，届时必须同步插入流水级，否则数据与 metadata 会**静默错位**。
-  // 这里在 elaboration 期直接拦住，不靠仿真碰运气。
-  private def latOf(w: Int, d: Int): Int = {
-    val m = memCfg("latProbe", w, d)
-    m.latency + (if (m.CheckOut) 1 else 0)
-  }
-  require(latOf(l.htWordW, l.bankDepth) == 1, "HT 读延迟必须为 1 拍，当前为 " + latOf(l.htWordW, l.bankDepth))
-  require(latOf(l.ktEntryW, l.ktDepthReal) == 1, "KT 读延迟必须为 1 拍，当前为 " + latOf(l.ktEntryW, l.ktDepthReal))
-  require(latOf(l.adW, params.adDepth) == 1, "AD 读延迟必须为 1 拍，当前为 " + latOf(l.adW, params.adDepth))
+  // 读延时由四个插拍参数决定（见 EmParams.memFlopIn/Out/CheckIn/Out）。流水线各级之间按
+  // `l.rdLat` 延拍：这里的 require 是把 EmLayout 的推导与 Memory 的实现**互相校验**，
+  // 防止两边公式漂移（也顺便保证三张表一致 —— 它们共用同一组插拍参数）。
+  private def latOf(w: Int, d: Int): Int = memCfg("latProbe", w, d).readLatency
+  require(latOf(l.htWordW, l.bankDepth) == l.rdLat,
+    s"HT 读延时：Memory 算出 ${latOf(l.htWordW, l.bankDepth)}，EmLayout 算出 ${l.rdLat}")
+  require(latOf(l.ktEntryW, l.ktDepthReal) == l.rdLat,
+    s"KT 读延时：Memory 算出 ${latOf(l.ktEntryW, l.ktDepthReal)}，EmLayout 算出 ${l.rdLat}")
+  require(latOf(l.adW, params.adDepth) == l.rdLat,
+    s"AD 读延时：Memory 算出 ${latOf(l.adW, params.adDepth)}，EmLayout 算出 ${l.rdLat}")
 
   private val memReady = htMems.map(_.io.dfx.initDone).reduce(_ && _) &&
     ktMem.map(_.io.dfx.initDone).getOrElse(true.B) &&
     adMem.map(_.io.dfx.initDone).getOrElse(true.B) && !io.memInit
   io.memInitDone := RegNext(memReady,false.B)
+
+  // =========================================================================
+  // 存储不可纠错误（UE）
+  //
+  // Wrap3 的 uecErr 与 rdata **同拍**（Memory.scala 里 errOutReg/rdataOutReg 对齐，已实测），
+  // 所以按"发起读的下一拍"采样即可：HT 在 d1 采、KT 在 d2 采、AD 在响应拍采。
+  //
+  // 策略（fail-safe —— 宁可报 miss，也绝不用坏数据）：
+  //   ① 命中判定不可信 → 强制 miss，响应里 ad 一并清零（坏数据不外传）；
+  //   ② 计数 + 顶层脉冲/来源上报（本请求的响应那一拍）；
+  //   ③ UE 自愈：把坏掉的 HT 槽位作废（见下面 invPend），交给 svc 空闲时执行；
+  //   ④ svc（维护/老化）读到 UE → 放弃本次任务，绝不拿坏数据写回（见 S_MEMERR）。
+  //
+  // ⚠️ `memProtect = ProtNone`（EM 默认）时 uecErr 恒 0，这一整套是纯旁路、不改变行为。
+  // ⚠️ KT 读出错若不拦，`ktKey === cmKey` 可能**假命中**返回别人的 ad —— 静默的数据面错误，
+  //    所以 KT 的 UE 是这里最要紧的一条。
+  // =========================================================================
+  private val htUErrV = VecInit(htMems.map(_.io.lgc.uecErr))
+  private val htUErrC = htUErrV.asUInt.orR
+  private val ktUErrC = ktMem.map(_.io.lgc.uecErr).getOrElse(false.B)
+  private val adUErrC = adMem.map(_.io.lgc.uecErr).getOrElse(false.B)
+
+  val cntUErr = RegInit(0.U(16.W))
+
+  // ---- UE 自愈：待作废的 HT 槽位（bank/idx + way 位掩码）----
+  // 为什么用掩码：HT 读出错时**只知道桶**（整个桶字不可信，无法判断是哪一路），
+  // 要作废该桶全部 way；KT/AD 读出错时明确知道是命中那一路，只作废 1 位。
+  // 清 valid 而不归还 KT/AD：指针来自坏数据不可信，宁可有界泄漏也不乱释放。
+  val invPend = RegInit(false.B)
+  val invBk   = Reg(UInt(l.bankW.W))
+  val invIdx  = Reg(UInt(l.idxW.W))
+  val invMask = Reg(UInt(ways.W))
+  val invBusy = invPend && invMask =/= 0.U
+
+  /** 请求作废某桶的若干路。⚠️ 同一拍只接受一个请求（并行 UE 属致命事件，丢一个可接受）。 */
+  private def invReq(bk: UInt, idx: UInt, mask: UInt): Unit = {
+    invPend := true.B
+    invBk   := bk
+    invIdx  := idx
+    invMask := mask
+  }
+  private def invAllWays: UInt = ((BigInt(1) << ways) - 1).U(ways.W)
+  private def invOneWay(w: UInt): UInt = (1.U(ways.W) << w)(ways - 1, 0)
 
   // =========================================================================
   // CRC / 哈希
@@ -265,7 +331,12 @@ class ExactMatch(params: EmParams) extends Module {
   // S_HTD：HT 数据"决策"拍 —— 必须独立于 S_HTW，因为 sPay 是 S_HTW 当拍末才写入的，
   // 在 S_HTW 当拍就用 sFpHit/sFpSel（寄存器版）判断，拿到的是**上一轮**的桶数据。
   val S_HTD   = 11.U(4.W)
+  // S_MEMERR：svc 读到了不可纠错误（UE）→ 放弃本次任务。存在的意义：
+  // 老化任务此时已经把目标槽位（或 OVFC 项）claim 住了，直接回 S_IDLE 会让 claim 永久占位
+  //（插入把 claim 当占用 → 那一路再也分配不出去），所以必须专门走一拍把它放掉。
+  val S_MEMERR = 12.U(4.W)
   val sState = RegInit(S_IDLE)
+  val sUeSrc = Reg(UInt(2.W))            // S_MEMERR 时的错误来源（HT/KT）
 
   // =========================================================================
   // 查找流水线寄存器（metadata 影子：r1 → d1 → d2 → d3）
@@ -327,6 +398,20 @@ class ExactMatch(params: EmParams) extends Module {
   val d3FwH  = Reg(Bool())
   val d3FwAd = Reg(UInt(adW.W))
 
+  // ---- UE 影子 ----
+  // ⚠️ 采样拍子：Wrap3 的 uecErr 与 rdata **同拍**，而三张表的 rdata 分别在
+  //    HT→d1、KT→d2、AD→d3（或 !useKt 时 d2）才有效，所以 uecErr 也只在那些拍有效。
+  //    HT 的错在 d1 拍是**组合有效**（与 htNow 同源）—— 不能像 metadata 那样"在 r1 拍捕获"，
+  //    那会采到上一拍的 0（这是 v1 踩过的坑）。要带过 d2/d3 才需要寄存器。
+  //    KT/AD 的错本身就在各自数据拍有效，直接用当时的组合值。
+  val shHtUe  = RegInit(false.B)     // 随 d1→d2 推进：本请求的 HT 读错
+  val d3UeAcc = RegInit(false.B)     // 随 d2→d3 推进：d2 拍为止的累计
+  val d3UeSrc = Reg(UInt(2.W))
+  // 发起 AD 读时选中的 HT 槽位（随流水带到 AD 数据拍，AD 读报 UE 时用它定位要作废的槽位）
+  val adSBk   = Reg(UInt(l.bankW.W))
+  val adSWy   = Reg(UInt(l.wayW.W))
+  val adSIdx  = Reg(UInt(l.idxW.W))
+
   val htRdUsed = r1V
   val ktRdUsed = useKt.B && d1V
   val adRdUsed = useAd.B && (if (useKt) d2V else d1V)
@@ -354,7 +439,7 @@ class ExactMatch(params: EmParams) extends Module {
 
   val ovScIdx = RegInit(0.U(ovfcCntW1.W))
   val scanOn  = (if (agingOn && sweepOn) io.ageEn && memReady else false.B)
-  val ovScHit = if (ovfcEn) scanOn && !agPend && ovfcV(ovScIdx) && !ovfcC(ovScIdx) && ovfcExp(ovScIdx) else false.B
+  val ovScHit = if (ovfcEn) scanOn && !agPend && !invBusy && ovfcV(ovScIdx) && !ovfcC(ovScIdx) && ovfcExp(ovScIdx) else false.B
   if (ovfcEn) {
     when(scanOn && !agPend) { ovScIdx := Mux(ovScIdx === (ovfcD - 1).U, 0.U, ovScIdx + 1.U) }
   }
@@ -364,12 +449,12 @@ class ExactMatch(params: EmParams) extends Module {
   ageTab.io.scanHold := agPend
   val htScHit = ageTab.io.scanHit
 
-  ageTab.io.clmEn  := htScHit && !agPend
+  ageTab.io.clmEn  := htScHit && !agPend && !invBusy
   ageTab.io.clmBk  := ageTab.io.scanBk
   ageTab.io.clmIdx := ageTab.io.scanIdx
   ageTab.io.clmWy  := ageTab.io.scanWy
 
-  when(htScHit && !agPend) {
+  when(htScHit && !agPend && !invBusy) {
     agPend := true.B; agOv := false.B
     agBk := ageTab.io.scanBk; agIdx := ageTab.io.scanIdx; agWy := ageTab.io.scanWy
   }.elsewhen(ovScHit) {
@@ -409,10 +494,14 @@ class ExactMatch(params: EmParams) extends Module {
   // =========================================================================
   // 读地址驱动（流水线与 svc 二选一）
   // =========================================================================
-  // HT：r1 拍发起（每 bank 独立一次）
+  // HT：r1 拍发起（每 bank 独立一次）；svc 抢到 S_HTREQ 那一拍由 svc 发起
+  // ⚠️ svc 也必须拉高 re：v1 曾写死 `Mux(svcOwns, false.B, htRdUsed)`，仿真里因为
+  // SimMemory 的 rdata 恒等于 RegNext(m(raddr))、不按 re 门控而"看起来能用"，
+  // 但 (a) 换成物理 SRAM 后 svc 的 HT 读会拿不到数据，(b) uecErr 被 reFlopped 门掉，
+  // svc 的 UE 永远不会上报。KT/AD 那两处本来就是 `sState === S_KTREQ` 的写法。
   for (b <- 0 until numBanks) {
     htMems(b).io.lgc.raddr := Mux(svcOwns, sIdx(b), r1Idx(b))
-    htMems(b).io.lgc.re    := Mux(svcOwns, false.B, htRdUsed)
+    htMems(b).io.lgc.re    := Mux(svcOwns, sState === S_HTREQ, htRdUsed)
   }
   ageTab.io.qIdx := VecInit((0 until numBanks).map(b => Mux(svcOwns, sIdx(b), r1Idx(b))))
 
@@ -458,6 +547,18 @@ class ExactMatch(params: EmParams) extends Module {
   val fwdHit = if (learnOn) fwd.get.io.hit else false.B
   val fwdAd  = if (learnOn) fwd.get.io.hitAd else 0.U(adW.W)
 
+  // ---- UE 各拍的组合值（采样拍子见上面影子寄存器的说明）----
+  // d1 拍：HT 桶字读的错（HT 数据就在 d1 拍）
+  val d1UeC    = d1V && htUErrC
+  // d2 拍：d1 带过来的 HT 错 + 本拍 KT（useKt）或 AD（!useKt&&useAd）数据的错
+  val ktUeC    = if (useKt) (d2V && ktUErrC) else false.B
+  val adUeC    = if (useD3) false.B else if (useAd) (d2V && adUErrC) else false.B
+  val d2UeC    = shHtUe || ktUeC || adUeC
+  val d2UeSrcC = Mux(shHtUe, EmUErrSrc.ht, Mux(ktUeC, EmUErrSrc.kt, EmUErrSrc.ad))
+  // d3 拍：d2 带过来的累计 + 本拍 AD 数据的错
+  val d3AdC    = if (useD3) (d3V && adUErrC) else false.B
+  val d3UeSrcC = Mux(d3UeAcc, d3UeSrc, EmUErrSrc.ad)
+
   // ---- 表内命中判定 ----
   //   useKt : 只有指纹命中的那一条 KT 参与 Full Key 比较（**不是多路 KT 一起比**）
   //   !useKt: key 内联在 HT payload 里，桶内并行比较
@@ -469,7 +570,13 @@ class ExactMatch(params: EmParams) extends Module {
   val cmFpSel = if (useKt) d2FpSel else cmSel
   val cmHit: Bool = if (useKt) (cmFpOk && (l.ktKey(ktMem.get.io.lgc.rdata) === cmKey))
                     else cmHitM.asUInt.orR
-  val tblHit = Mux(cmOvH, true.B, cmHit)
+  // UE fail-safe：决策拍已知该请求读到过不可纠错误 → 表内命中判定不可信，强制 miss。
+  // 这一处门控同时管住 hit / 命中刷新(rfOn) / 自学习判定(learnReq) / d2Hit / d3Hit，
+  // 也就是所有"是否命中"的下游用法；AD 读的错在响应拍才到，另在响应处门控。
+  // （learning 打开时，强制 miss 会把该 key 重新压进转发 CAM → 走一次 add 覆盖写，
+  //   等于顺带把坏条目修好 —— 自愈的[快路径]。）
+  val cmUe  = if (useKt) d2UeC else d1UeC
+  val tblHit = Mux(cmOvH, true.B, cmHit) && !cmUe
 
   /** 命中条目的 payload / KT 条目（供取 AD 指针）；useKt 时 OVFC 命中也读的是这一路 KT */
   val srcEnt: UInt =
@@ -510,6 +617,18 @@ class ExactMatch(params: EmParams) extends Module {
   // =========================================================================
   // 流水线推进（svcOwns 时整体冻结）
   // =========================================================================
+  /**
+   * 把上一级的影子值搬到本级。读延时是 rdLat 拍，所以"发起读的那一级"到
+   * "用数据的那一级"要隔 rdLat 个寄存器（rdLat==1 时就是原来的 `RegNext`）。
+   *
+   * 为什么用 `RegEnable(_, adv)` 而不是 `ShiftRegister`：
+   *   ① 不带复位 —— 流水线 reg 原本就是 `Reg`，加复位会给已经很重的复位网络再添负载；
+   *   ② 链上每一级都跟着 `adv` 冻结，所以在 `when(adv)` 内外写都对。
+   * 注意 `acq → r1` 那一步与存储无关，仍然是 1 拍，不走这里。
+   */
+  private def shadow[T <: Data](x: T): T =
+    (1 until l.rdLat).foldLeft(x)((prev, _) => RegEnable(prev, adv))
+
   io.key.ready := adv && (if (useSerial) !crcRun else true.B)
 
   // r1 无条件跟随 acq；acq 被提交后清零（同拍又接收新请求会再次置位 → 背靠背不丢拍）。
@@ -538,48 +657,112 @@ class ExactMatch(params: EmParams) extends Module {
   }
 
   when(adv) {
-    // r1 → d1：metadata 影子 + 指纹比对结果（AgeTable 的 valid 位图在 r1 拍组合读出）
-    d1V := r1V; d1Key := r1Key; d1Ad := r1Ad; d1Idx := r1Idx; d1Fp := r1Fp
-    d1OvH := r1OvH; d1OvS := r1OvS; d1OvP := r1OvP
+    // r1 → d1：metadata 影子（按 rdLat 延拍）+ 指纹比对结果
+    //（AgeTable 的 valid 位图在 r1 拍组合读出，所以也要跟着延相同拍数）
+    d1V := shadow(r1V); d1Key := shadow(r1Key); d1Ad := shadow(r1Ad)
+    d1Fp := shadow(r1Fp)
+    d1OvH := shadow(r1OvH); d1OvS := shadow(r1OvS); d1OvP := shadow(r1OvP)
     for (b <- 0 until numBanks) {
-      for (w <- 0 until ways) { d1Val(b * ways + w) := ageTab.io.qEnt(b)(w)(0) }
+      d1Idx(b) := shadow(r1Idx(b))
+      for (w <- 0 until ways) { d1Val(b * ways + w) := shadow(ageTab.io.qEnt(b)(w)(0)) }
     }
+    // d1 拍有效的是 HT 桶字读的 UE —— 那是**组合**值（与 htNow 同源），
+    // 不在这里捕获，见上面的 d1UeC / d2UeC 组合定义。
+
     // d1 → d2
     if (useKt) {
-      d2V := d1V; d2Key := d1Key; d2Ad := d1Ad; d2Idx := d1Idx
-      d2OvH := d1OvH; d2OvS := d1OvS; d2OvP := d1OvP; d2Val := d1Val
+      d2V := shadow(d1V); d2Key := shadow(d1Key); d2Ad := shadow(d1Ad)
+      d2Idx := shadow(d1Idx)
+      d2OvH := shadow(d1OvH); d2OvS := shadow(d1OvS); d2OvP := shadow(d1OvP)
+      d2Val := shadow(d1Val)
       // 用 d1 拍当拍的组合比对结果（此时 d1Val 已是本请求的 valid 位）
-      d2FpOk := d1FpOkC; d2FpSel := d1FpSelC
+      d2FpOk := shadow(d1FpOkC); d2FpSel := shadow(d1FpSelC)
     } else if (useAd) {
-      d2V := d1V; d2Hit := tblHit; d2FwH := fwdHit; d2FwAd := fwdAd
+      d2V := shadow(d1V); d2Hit := shadow(tblHit)
+      d2FwH := shadow(fwdHit); d2FwAd := shadow(fwdAd)
+      // d2 是这一支的 AD 数据拍，记下命中槽位供 UE 自愈定位
+      adSBk := shadow(l.slotBank(cmSel)); adSWy := shadow(l.slotWay(cmSel))
+      adSIdx := shadow(d1Idx(l.slotBank(cmSel)))
     }
     // d2 → d3
     if (useD3) {
-      d3V := d2V; d3Hit := tblHit; d3FwH := fwdHit; d3FwAd := fwdAd
+      d3V := shadow(d2V); d3Hit := shadow(tblHit)
+      d3FwH := shadow(fwdHit); d3FwAd := shadow(fwdAd)
+      // d3 是 AD 数据拍：命中槽位来自 d2 拍的选择
+      adSBk := shadow(l.slotBank(d2FpSel)); adSWy := shadow(l.slotWay(d2FpSel))
+      adSIdx := shadow(d2Idx(l.slotBank(d2FpSel)))
     }
+    // UE 影子推进（与上面同一批边沿）
+    shHtUe := shadow(d1UeC)               // d1 拍（组合）的 HT 读错 → 带到 d2/d3
+    if (useD3) { d3UeAcc := shadow(d2UeC); d3UeSrc := shadow(d2UeSrcC) }
+  }
+
+  // =========================================================================
+  // UE：结算（脉冲/计数/自愈）与 fail-safe
+  // =========================================================================
+  // 各拍的"本请求到目前为止是否读到过 UE"（组合；见上面影子寄存器的说明）
+  private val d3UeC = d3UeAcc || d3AdC
+  private val rspUe: Bool =
+    if (useAd) (if (useKt) d3UeC else d2UeC)
+    else cmUe
+  private val rspUeSrc: UInt =
+    if (useAd) (if (useKt) d3UeSrcC else d2UeSrcC)
+    else (if (useKt) d2UeSrcC else EmUErrSrc.ht)
+
+  // 每个请求/维护操作最多上报一次；查找侧在"响应那一拍"结算
+  private val lkUeFireV: Bool =
+    (if (useAd) (if (useKt) d3V && d3UeC else d2V && d2UeC) else cmV && cmUe) && adv
+
+  // ---- UE 自愈：定位要作废的 HT 槽位 ----
+  // HT 读错 → 只知道桶（桶字整体不可信）→ 作废该桶全部 way
+  // KT 读错 → 指纹命中的那一路 → 作废那一路
+  // AD 读错 → 发起 AD 读时选中的槽位（随流水带过来）→ 作废那一路
+  private val invFireHt = d1UeC && !invBusy
+  private val invFireKt = ktUeC && !invBusy
+  private val invFireAd = (if (useD3) d3AdC else if (useAd) adUeC else false.B) && !invBusy
+  when(invFireHt) {
+    val bk = PriorityEncoder(htUErrV.asUInt)(l.bankW - 1, 0)
+    invReq(bk, d1Idx(bk), invAllWays)
+  }.elsewhen(invFireKt) {
+    invReq(l.slotBank(d2FpSel), d2Idx(l.slotBank(d2FpSel)), invOneWay(l.slotWay(d2FpSel)))
+  }.elsewhen(invFireAd) {
+    invReq(adSBk, adSIdx, invOneWay(adSWy))
   }
 
   // rsp.valid 必须"每个请求恰好一拍"：svc 抢时隙会把整条流水线冻结（adv=0），
   // 此时停在 d3 的请求会一直保持 valid —— 消费方按 valid 计数就会把一个请求算成多个响应。
   // 用 adv 门控：被冻结的那拍不报，解冻后补一拍（响应被顺延，但不会重复）。
+  // UE 时：强制 miss 且 ad 清零 —— 绝不用坏数据当命中，也绝不把坏数据外传。
   if (useAd) {
     if (useKt) {
       io.rsp.valid := d3V && adv
-      io.rsp.bits  := Cat(d3Hit || d3FwH, Mux(d3FwH, d3FwAd, adMem.get.io.lgc.rdata))
+      io.rsp.bits  := Cat((d3Hit || d3FwH) && !d3UeC,
+                          Mux(d3UeC, 0.U(l.adW.W), Mux(d3FwH, d3FwAd, adMem.get.io.lgc.rdata)))
     } else {
       io.rsp.valid := d2V && adv
-      io.rsp.bits  := Cat(d2Hit || d2FwH, Mux(d2FwH, d2FwAd, adMem.get.io.lgc.rdata))
+      io.rsp.bits  := Cat((d2Hit || d2FwH) && !d2UeC,
+                          Mux(d2UeC, 0.U(l.adW.W), Mux(d2FwH, d2FwAd, adMem.get.io.lgc.rdata)))
     }
   } else {
     io.rsp.valid := cmV && adv
-    io.rsp.bits  := Cat(hit, Mux(fwdHit, fwdAd, tblAdVal))
+    // UE 时 ad 一并清零。注意 tblAdVal 在 useKt&&!useAd 时是 **KT 条目里内联的 ad**
+    //（这一档没有 AD 表），不能因为 useKt 就当成 0。
+    io.rsp.bits  := Cat(hit, Mux(fwdHit, fwdAd, Mux(cmUe, 0.U(l.adW.W), tblAdVal)))
   }
+
+  // 上报：脉冲 + 来源（查找侧；svc 侧见 S_MEMERR）
+  private val svcUeFire = sState === S_MEMERR
+  io.memUErr    := lkUeFireV || svcUeFire
+  io.memUErrSrc := Mux(svcUeFire, sUeSrc, rspUeSrc)
+  when(lkUeFireV || svcUeFire) { cntUErr := cntUErr + 1.U }
 
   // =========================================================================
   // svc 主状态机
   // =========================================================================
   val fwdPending = if (learnOn) !fwd.get.io.empty else false.B
-  io.wr.ready := (sState === S_IDLE) && !agPend
+  // 作废请求在 S_IDLE 里优先于其它任务，所以它占着的时候不能收维护命令
+  //（否则 ready 已经回了、命令却被丢）
+  io.wr.ready := (sState === S_IDLE) && !agPend && !invBusy
 
   def useOvNow(k: UInt): (Bool, UInt) = if (ovfcEn) ovfcMatch(k) else (false.B, 0.U(1.W))
 
@@ -601,8 +784,17 @@ class ExactMatch(params: EmParams) extends Module {
     }
   }
 
+  // UE 自愈的执行：作废请求优先于其它 svc 任务（每个请求最多 ways 拍清完）
+  val invGo    = (sState === S_IDLE) && invBusy
+  val invWySel = PriorityEncoder(invMask)
+  val invOneHot = UIntToOH(invWySel, ways)
+
   when(sState === S_IDLE) {
-    when(agPend) {
+    when(invBusy) {
+      // 一拍清一路：清 valid（+claim），同时把该位从掩码里去掉
+      invMask := invMask & ~invOneHot
+      when((invMask & ~invOneHot) === 0.U) { invPend := false.B }
+    }.elsewhen(agPend) {
       sTask := T_AGE
       sUseOv := agOv
       sOvSel := agOvSel
@@ -632,8 +824,20 @@ class ExactMatch(params: EmParams) extends Module {
     }
   }
 
+  // svc 的读也要等满 rdLat 拍：S_HTREQ/S_KTREQ 发起读，数据要到 rdLat 拍后才有效，
+  // 所以 S_HTW/S_KTW 先等 (rdLat-1) 拍再捕获（rdLat==1 时就是原来的"下一拍直接捕获"）。
+  // 等待期间 svcOwns=0（sState 不在 svcWantC 里）→ 查找流水线照常跑，不额外占时隙。
+  private val rdwW = math.max(1, log2Ceil(l.rdLat))
+  val sRdw = RegInit(0.U(rdwW.W))
+  private def svcRdDone: Bool = sRdw === (l.rdLat - 1).U
+  // UE 判定必须卡在"捕获那一拍"：等待期间 htUErrC/ktUErrC 属于别的（查找）读，不能拿来判 svc
+  val svcCapHt = (sState === S_HTW) && svcRdDone
+  val svcCapKt = useKt.B && (sState === S_KTW) && svcRdDone
+  val svcUeHt = svcCapHt && htUErrC
+  val svcUeKt = svcCapKt && ktUErrC
+
   when(svcOwns && sState === S_HTREQ) {
-    sState := S_HTW
+    sState := S_HTW; sRdw := 0.U
     for (b <- 0 until numBanks) {
       for (w <- 0 until ways) {
         sVal(b * ways + w) := ageTab.io.qEnt(b)(w)(0)
@@ -641,14 +845,16 @@ class ExactMatch(params: EmParams) extends Module {
       }
     }
   }
-  when(svcOwns && sState === S_KTREQ) { sState := S_KTW }
+  when(svcOwns && sState === S_KTREQ) { sState := S_KTW; sRdw := 0.U }
 
   when(sState === S_HTW) {
-    for (b <- 0 until numBanks) {
-      val rd = htMems(b).io.lgc.rdata.asTypeOf(Vec(ways, UInt(l.htPayW.W)))
-      for (w <- 0 until ways) { sPay(b * ways + w) := rd(w) }
-    }
-    sState := S_HTD        // 决策放到下一拍，此时 sPay 已是本桶数据
+    when(svcRdDone) {
+      for (b <- 0 until numBanks) {
+        val rd = htMems(b).io.lgc.rdata.asTypeOf(Vec(ways, UInt(l.htPayW.W)))
+        for (w <- 0 until ways) { sPay(b * ways + w) := rd(w) }
+      }
+      sState := S_HTD      // 决策放到下一拍，此时 sPay 已是本桶数据
+    }.otherwise { sRdw := sRdw + 1.U }
   }
 
   // ---- S_HTD：用刚捕获的桶数据（sPay/sVal）做判断 ----
@@ -669,8 +875,34 @@ class ExactMatch(params: EmParams) extends Module {
 
   if (useKt) {
     when(sState === S_KTW) {
-      sKtE := ktMem.get.io.lgc.rdata
-      sState := Mux(sTask === T_AGE, S_AGFR, S_DEC)
+      when(svcRdDone) {
+        sKtE := ktMem.get.io.lgc.rdata
+        sState := Mux(sTask === T_AGE, S_AGFR, S_DEC)
+      }.otherwise { sRdw := sRdw + 1.U }
+    }
+  }
+
+  // ---- svc 侧 UE：读 HT/KT 拿到不可纠错误 → 放弃本次任务（绝不拿坏数据写回）----
+  // 放在 S_HTW / S_KTW 的赋值之后，用后面的赋值覆盖它们的状态转移。
+  // 注意老化任务此时已 claim 了槽位，S_MEMERR 负责把 claim 放掉（见下面）。
+  when(svcUeHt || svcUeKt) {
+    sUeSrc := Mux(svcUeHt, EmUErrSrc.ht, EmUErrSrc.kt)
+    sState := S_MEMERR
+  }
+
+  // ---- S_MEMERR：把可能已 claim 的槽位放掉，然后回 IDLE（任务整体放弃）----
+  // · 老化任务：claim 已置 → 清 valid + claim（条目本就过期/损坏，顺手作废，能自愈）
+  // · 维护任务：没有 claim → 只回 IDLE（命令静默失败，靠 memUErr 脉冲告知）
+  // · OVFC 项：清 ovfcV/ovfcC 并减计数
+  // ⚠️ 不归还 KT/AD：指针来自坏数据（sPay/sKtE 不可信），宁可有界泄漏也不乱释放。
+  val memErrSt   = sState === S_MEMERR
+  val abortClrHt = memErrSt && agPend && !agOv
+  val abortClrOv = memErrSt && agPend && agOv
+  when(memErrSt) { sState := S_IDLE; agPend := false.B }
+  if (ovfcEn) {
+    when(abortClrOv) {
+      ovfcV(agOvSel) := false.B; ovfcC(agOvSel) := false.B
+      when(ovfcUseCnt =/= 0.U) { ovfcUseCnt := ovfcUseCnt - 1.U }
     }
   }
 
@@ -846,10 +1078,12 @@ class ExactMatch(params: EmParams) extends Module {
   ktFree.foreach { f => f.io.free := relEn; f.io.faddr := ktRelPtr }
   adFree.foreach { f => f.io.free := relEn; f.io.faddr := adRelPtr }
 
-  ageTab.io.clrEn  := (freeKey && !sUseOv) || (agFr && !agOv)
-  ageTab.io.clrBk  := Mux(agFr, agBk, l.slotBank(sSlot))
-  ageTab.io.clrIdx := Mux(agFr, agIdx, sIdx(l.slotBank(sSlot)))
-  ageTab.io.clrWy  := Mux(agFr, agWy, l.slotWay(sSlot))
+  // clr 的三类来源：删除/老化完成、svc 遇 UE 放弃（顺带作废）、UE 自愈作废
+  // ⚠️ 优先级：clr 高于 clm/ins（AgeTable 内部实现），作废与 claim 都走这一支。
+  ageTab.io.clrEn  := (freeKey && !sUseOv) || (agFr && !agOv) || abortClrHt || invGo
+  ageTab.io.clrBk  := Mux(invGo, invBk, Mux(agFr || abortClrHt, agBk, l.slotBank(sSlot)))
+  ageTab.io.clrIdx := Mux(invGo, invIdx, Mux(agFr || abortClrHt, agIdx, sIdx(l.slotBank(sSlot))))
+  ageTab.io.clrWy  := Mux(invGo, invWySel, Mux(agFr || abortClrHt, agWy, l.slotWay(sSlot)))
 
   if (ovfcEn) {
     when(freeKey && sUseOv) {
@@ -867,6 +1101,13 @@ class ExactMatch(params: EmParams) extends Module {
     sState := S_IDLE
   }
   when(agFr) { agPend := false.B }
+
+  // UE 自愈作废：条目数要同步减。只减**真的清掉了**的（靠 AgeTable 的 clrWasValid 判断），
+  // 否则 entries 会虚高。KT/AD 不归还（指针来自不可信数据），所以 ktFree/adFree 与
+  // entries 之间会有偏差 —— 这是 UE 自愈的有界代价，见文档。
+  when(invGo && ageTab.io.clrWasValid) {
+    when(entryCnt =/= 0.U) { entryCnt := entryCnt - 1.U }
+  }
 
   if (learnOn) {
     // 转发 CAM 的弹出要**延迟 2 拍**，不能与 S_WR 同拍：
@@ -903,5 +1144,7 @@ class ExactMatch(params: EmParams) extends Module {
   io.status.ktFree    := ktFree.map(f => f.io.count.asUInt).getOrElse(0.U)
   io.status.adFree    := adFree.map(f => f.io.count.asUInt).getOrElse(0.U)
   io.status.lkBusy    := acqV || r1V || d1V
-  io.status.mtBusy    := sState =/= S_IDLE
+  io.status.uerrCnt   := cntUErr
+  // 作废还没清完时 svc 也算忙（否则上层以为空闲、下发命令又被上面 ready 挡住，来回试探）
+  io.status.mtBusy    := (sState =/= S_IDLE) || invPend
 }

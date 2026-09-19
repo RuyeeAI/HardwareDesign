@@ -59,6 +59,9 @@ class AgeTable(l: EmLayout, timeout: BigInt) extends Module {
     val rfBk   = Input(UInt(l.bankW.W)); val rfIdx  = Input(UInt(l.idxW.W)); val rfWy  = Input(UInt(l.wayW.W))
     val clrEn  = Input(Bool())                       // 清空：valid=0, claim=0
     val clrBk  = Input(UInt(l.bankW.W)); val clrIdx = Input(UInt(l.idxW.W)); val clrWy = Input(UInt(l.wayW.W))
+    // 本拍 clrEn 命中的条目原本是不是 valid —— UE 自愈作废时要靠它同步减条目数
+    //（只减真的清掉了的；否则 entries 会虚高）
+    val clrWasValid = Output(Bool())
     val clmEn  = Input(Bool())                       // 置 claim（保留 valid / ts）
     val clmBk  = Input(UInt(l.bankW.W)); val clmIdx = Input(UInt(l.idxW.W)); val clmWy = Input(UInt(l.wayW.W))
   })
@@ -134,4 +137,6 @@ class AgeTable(l: EmLayout, timeout: BigInt) extends Module {
            /* rf */      mkEnt(true.B, io.now, eClaim(ents(rfIdxE))))))
 
   when(wrEn) { ents(wrIdx) := wrEnt }
+
+  io.clrWasValid := eValid(ents(clrIdxE))
 }

@@ -133,7 +133,15 @@ final case class EmParams(
                              // （越小＝维护/老化越跟得上，代价是查找 II 的少量损失）
     aging: Option[AgingParams] = None,
     learning: Option[LearningParams] = None,
-    memProtect: MemoryProtectType = MemoryProtectType.ProtNone  // 存储保护（透传 Memory.scala）
+    memProtect: MemoryProtectType = MemoryProtectType.ProtNone,  // 存储保护（透传 Memory.scala）
+    // ---- 存储读通路的插拍（透传 Memory 的四个 flop，见 Memory.readLatency）----
+    // 默认全 false → 读延时 1 拍（流水线最浅、II=1、时序压力最小）。
+    // 宏访问时间收不住时按需打开（典型：只开 memFlopOut 把 SRAM 输出寄存一拍，读延时变 2）。
+    // 流水线会按 `EmLayout.rdLat` 自动延长各级之间的影子寄存器，不需要改别的地方。
+    memFlopIn:   Boolean = false,
+    memFlopOut:  Boolean = false,
+    memCheckIn:  Boolean = false,
+    memCheckOut: Boolean = false
 )
 
 /** 由参数推导出的全部位宽与条目布局。所有字段访问都走这里，避免各处重复推导。 */
@@ -227,11 +235,22 @@ final case class EmLayout(p: EmParams) {
   val rspW     = 1 + adW          // 对外响应：hit(最高位) + ad
 
   /**
-   * 查找延迟（拍，从接受请求到 rsp 有效）：
-   *   S1 接收（哈希打拍）+ HT 读 + KT 读 + AD 读 + S4 输出
-   * 不含 CrcRuntime 串行 CRC 的 keyWidth 拍（那种模式下无法 II=1）。
+   * 存储端到端读延时（拍）= CheckIn + flopIn + 1(存储固有) + flopOut + CheckOut。
+   * 与 `Memory.readLatency` 同义（`ExactMatch` 里两者会互相 require 校验，防止漂移）；
+   * 流水线各级之间的影子寄存器按它延拍（见 `ExactMatch.shadow`）。
+   * ⚠️ 必须定义在 `lookupLatency` 之前（case class 的 val 按声明顺序初始化）。
    */
-  val lookupLatency = 2 + (if (p.useKt) 1 else 0) + (if (p.useAd) 1 else 0)
+  val rdLat = 1 + (if (p.memFlopIn) 1 else 0) + (if (p.memFlopOut) 1 else 0) +
+                  (if (p.memCheckIn) 1 else 0) + (if (p.memCheckOut) 1 else 0)
+  require(rdLat >= 1, s"rdLat($rdLat) 必须 >= 1")
+
+  /**
+   * 查找延迟（拍，从接受请求到 rsp 有效）：
+   *   接收打拍(1) + acq→r1(1) + 各级"发起读 → 数据回来"的 rdLat 拍 × (HT + KT + AD 级数)
+   * 不含 CrcRuntime 串行 CRC 的 keyWidth 拍（那种模式下无法 II=1）。
+   * ⚠️ 测试用它当"填满流水线需要多少拍"的上界（再留余量），所以宁可偏大。
+   */
+  val lookupLatency = 2 + rdLat * (1 + (if (p.useKt) 1 else 0) + (if (p.useAd) 1 else 0))
 
   // ---- HT payload 字段访问器 ----
   /** 桶内该条的指纹（只 useKt 有；!useKt 时 key 直接内联，不需要指纹） */
