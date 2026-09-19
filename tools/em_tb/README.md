@@ -1,30 +1,25 @@
 # tools/em_tb —— EM 波形审查
 
-改动 RTL 后想看一眼波形，用这里的脚本一键出图。
+改动 RTL 后想看一眼波形，在 Scala 侧跑仿真出波形，再用 Surfer 打开。
 
 ```bash
-tools/em_tb/run_wave.sh              # 出 FST 并直接起 Surfer（默认）
-tools/em_tb/run_wave.sh --vcd        # 出 VCD（可用 vcd_check.py 自动检查）
-tools/em_tb/run_wave.sh --no-open    # 只跑仿真，不出图形界面（CI/脚本）
+sbt "testOnly em.EmWaveSpec"        # 跑 P1..P7 场景 + dump 波形 + 打印各阶段观测值
+surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd
 ```
 
-流程：`em.EmGen` 产出 Verilog → Verilator 编译 → 跑 testbench → 出波形 →（可选）起 Surfer
-并自动加载预设视图。产物都在 `out/em_tb/`（.gitignore 内）。
-
-依赖：`sbt`、`verilator`（`brew install verilator`）、`surfer`（`brew install surfer`）。
-**不要用 iverilog**：`AgeTable` / `FreeList` 被 firtool 展成"连续赋值里对数组做变量下标读"，
-iverilog 要求常量下标，编不过。
+波形落在 `out/em_wave/workdir-verilator/trace.vcd`（`out/` 在 .gitignore 内）。
+场景、断言、每个阶段的观测值都打印在测试日志里，没查看器也能读。
 
 ## 文件
 
 | 文件 | 说明 |
 |------|------|
-| `run_wave.sh` | 一键流程（生成 → 编译 → 仿真 → 起 Surfer） |
-| `tb_exact_match.v` | testbench，7 个场景阶段；与 `preset=tb` 绑定 |
-| `em_wave.sucl` | Surfer 命令文件：预设要看的信号分组 + `zoom_fit` |
-| `vcd_check.py` | VCD 自动检查（响应平衡等），只支持 VCD |
+| `../../src/test/scala/em/EmWaveSpec.scala` | **波形场景本体**（P1..P7，Scala 侧驱动） |
+| `../../src/test/scala/em/WaveSimulator.scala` | 带波形 dump 的 Verilator 仿真器封装 |
+| `../../src/test/scala/em/EmTestSupport.scala` | 驱动 DUT 的公共脚手架（与 `ExactMatchSpec` 共用） |
+| `em_wave.sucl` | Surfer 命令文件：预设信号分组 + `zoom_fit` |
 
-## testbench 的 7 个阶段
+## 场景的 7 个阶段（`EmWaveSpec`）
 
 | 阶段 | 内容 | 期望观测 |
 |------|------|----------|
@@ -32,40 +27,57 @@ iverilog 要求常量下标，编不过。
 | P2 | `add` ×2（第 2 次是覆盖写） | 首次插入 FSM 走 `S_HTREQ→S_HTW→S_HTD→S_DEC→S_ALLOC→S_WR`（**无 S_KTREQ**，指纹没命中省掉 KT 读）；覆盖写多出 `S_KTREQ→S_KTW`（指纹命中，读那 1 路 KT） |
 | P3 | 命中查找 / 未插入查找 | `hit=1` / `hit=0` |
 | P4 | **背靠背同 KEY**（需求 2） | 两个响应：先 `hit=0`（miss 并触发学习），再 `hit=1`（转发 CAM） |
-| P5 | 连续灌命中流量（需求 1） | `rsp_valid` 每拍都高（无 svc 活儿时 40 拍 40 个响应） |
-| P6 | **老化**（需求 3） | `entries` 归 0 的同一拍 `ktFree`/`adFree` 回满 |
+| P5 | 连续灌命中流量（需求 1） | 40 拍稳态窗口内**每拍都有响应**、`key_ready` 不掉拍；停灌后流水线排空 |
+| P6 | **老化**（需求 3） | `entries` 归 0 的同时 `ktFree`/`adFree` 回到满值 |
 | P7 | 打满 HT + OVFC | `entries=70`、`ovfcUse=8`、`insFail=10` |
 
 波形里 `sState` 的编码：`0=S_IDLE 2=S_HTREQ 3=S_HTW 4=S_KTREQ 5=S_KTW 6=S_DEC 7=S_ALLOC 8=S_WR 9=S_FREE 10=S_AGFR 11=S_HTD`。
 
 ## 波形开关：出不出波形
 
-**开关在 Verilator 编译那一步，TB 不用改** —— Verilator 不加 `--trace*` 时，TB 里的
-`$dumpfile/$dumpvars` 会被直接忽略（实测：0 报错、不落文件，而且仿真明显更快：
-`--no-wave` 时 4.6~5.6 ms/s，出 FST 时 1~2 ms/s）。
+要开波形得**同时**满足两处（都写在 `WaveSimulator.scala` 里）：
 
-| 想做的事 | 命令 |
-|---|---|
-| 出波形并自动打开（默认 FST） | `tools/em_tb/run_wave.sh` |
-| 出波形但不打开（CI / 只想留文件） | `tools/em_tb/run_wave.sh --no-open` |
-| 出 VCD（供 `vcd_check.py` 自动检查） | `tools/em_tb/run_wave.sh --vcd --no-open` |
-| **不出波形**（只要 PASS/FAIL 与打印日志） | `tools/em_tb/run_wave.sh --no-wave` |
+| 位置 | 作用 |
+|------|------|
+| 编译期 `Backend.CompilationSettings(traceStyle = Some(TraceStyle.Vcd()))` | 给 Verilator 加 `--trace` 并定义 `SVSIM_ENABLE_VCD_TRACING` |
+| 运行期 `controller.setTraceEnabled(true)` | 触发 DPI 回调里的 `$dumpfile` / `$dumpvars` |
 
-想改"dump 哪些信号"，编辑 `tb_exact_match.v` 里的 `$dumpvars`：
-`$dumpvars(1, tb)` 是顶层（含 DUT 全部端口），紧跟着那串 `tb.dut.xxx` 是额外补的内部信号
-（流水线 valid、`sState`、计数器等）。把那一串删掉就只留端口，波形文件更小。
+只做前一步 → 编出带 trace 的模型但一个字节都不落盘；只做后一步 → `$dumpvars` 被 `ifdef` 掉。
+不想出波形就把 `traceStyle` 去掉 —— Verilator 不加 `--trace` 时 `$dumpfile/$dumpvars` 被直接忽略
+（0 报错、不落文件，仿真明显更快）。
+
+dump 哪些信号由 svsim 生成的 `testbench.sv` 决定（`$dumpvars(0, dut)`，即 DUT 全层次
+1100+ 个信号），Scala 侧改不了。
+
+## ⚠️ 两个已知代价
+
+1. **只能出 VCD，没有 FST。** svsim 的 Verilator 后端只提供 `TraceStyle.Vcd`，
+   所以拿不到 FST 的体积优势（同场景 VCD ~306KB vs FST ~28KB）。
+2. **不能对波形做"输入与时钟沿同拍"类的自动检查。** svsim 通过 DPI poke 输入，
+   Verilator trace 给这些信号的时间戳是 eval 序号而非真实仿真时间，poke 的落点相对
+   时钟采样沿会偏移（实测：55 个请求在波形上按同拍判据只能数出 49 个，输出的响应拍
+   数也会差 2）。**看波形不受影响**（脉冲与响应都在、顺序也对），只是别用同拍判据去数。
+
+   响应平衡的检查因此放在 Scala 断言里：`EmTestSupport.tick()` 每拍回调一次 `onCycle`，
+   `EmWaveSpec` 用它统计"握手拍数 == 响应拍数"（`peek` 拿的是仿真器的真实值）。
+   比以前 `vcd_check.py` 在波形上数更权威，也更早发现问题。
 
 ## 打开波形
 
 ```bash
-surfer out/em_tb/em_tb.fst                                  # 直接打开
-surfer -c tools/em_tb/em_wave.sucl out/em_tb/em_tb.fst      # 带预设视图（脚本默认就是这条）
+surfer out/em_wave/workdir-verilator/trace.vcd               # 直接打开
+surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd   # 带预设视图
 ```
 
-`em_wave.sucl` 里已经分好组（时钟握手 / 查找流水线 / svc引擎 / 计数与状态）并 `zoom_fit`。
-在里面调好视图后可以 `save_state_as xxx.surf.ron` 存下来，下次 `surfer -s xxx.surf.ron` 复用。
+`em_wave.sucl` 已分好组（时钟握手 / 查找流水线 / svc引擎 / 计数与状态）并 `zoom_fit`。
+在里面调好视图后可 `save_state_as xxx.surf.ron` 存下来，下次 `surfer -s xxx.surf.ron` 复用。
 
-FST / VCD 都是通用波形格式，换查看器不用重新仿真：
+⚠️ `em_wave.sucl` 里的信号路径与仿真来源绑定：Scala 侧波形是
+`TOP.svsimTestbench.<端口>` / `TOP.svsimTestbench.dut.<内部信号>`。
+
+## 查看器
+
+VCD 是通用格式，换查看器不用重新仿真：
 
 | 查看器 | 装法 | 说明 |
 |---|---|---|
@@ -74,14 +86,7 @@ FST / VCD 都是通用波形格式，换查看器不用重新仿真：
 | WaveTrace | VS Code 扩展 `wavetrace.wavetrace` | 免费限 8 个信号，**只读 VCD** |
 | GTKWave | ⚠️ macOS 的 Homebrew cask 已停用（上游 discontinued） | 要走社区 tap 或源码编 GTKWave 4 |
 
-## 自动检查
+## 注：为什么不用 iverilog
 
-```bash
-tools/em_tb/run_wave.sh --vcd --no-open
-python3 tools/em_tb/vcd_check.py out/em_tb/em_tb.vcd
-```
-
-会核对 **#(key 握手) == #(rsp_valid 高电平拍)**。这条检查是有来历的：`rsp_valid` 曾经
-在 svc 冻结流水线时被保持多拍（一个请求被数成多个响应），就是 review 波形时这样发现的。
-（FST 是二进制，这个脚本只吃 VCD；要自动检查就加上 `--vcd`。）
-
+`AgeTable` / `FreeList` 被 firtool 展成"连续赋值里对数组做变量下标读"，iverilog 要求常量
+下标，编不过。仿真与波形都走 Verilator。

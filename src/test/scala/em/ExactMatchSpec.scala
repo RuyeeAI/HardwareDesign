@@ -4,7 +4,6 @@ import chisel3._
 import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import BaseCbb.SimReset
 
 // ===========================================================================
 // EM 流水线版功能测试
@@ -19,87 +18,10 @@ import BaseCbb.SimReset
 //   需求3 老化并同时释放 KT       —— ktFree/adFree 必须回到满值
 // 另有一组按预设参数化的 add/lookup/del 用例，覆盖 useKt/useAd 的四种裁剪组合。
 // ===========================================================================
-class ExactMatchSpec extends AnyFlatSpec with Matchers {
+class ExactMatchSpec extends AnyFlatSpec with Matchers with EmTestSupport {
 
-  private val OP_ADD = 0
-  private val OP_DEL = 1
-  private val OP_UPD = 2
-
-  private def adMask(l: EmLayout): BigInt = (BigInt(1) << l.adW) - 1
-
-  private def idle(dut: ExactMatch): Unit = {
-    dut.io.key.valid.poke(false.B)
-    dut.io.key.bits.poke(0.U)
-    dut.io.wr.valid.poke(false.B)
-    dut.io.wr.bits.op.poke(0.U)
-    dut.io.wr.bits.key.poke(0.U)
-    dut.io.wr.bits.ad.poke(0.U)
-    dut.io.learnAd.poke(0.U)
-    dut.io.learnEn.poke(false.B)
-    dut.io.ageEn.poke(false.B)
-    dut.io.crcPoly.poke(0.U)
-    dut.io.crcInit.poke(0.U)
-    dut.io.crcXor.poke(0.U)
-  }
-
-  private def initDut(dut: ExactMatch): Unit = {
-    SimReset(dut)
-    idle(dut)
-    dut.io.memInit.poke(true.B)
-    dut.clock.step(1)
-    dut.io.memInit.poke(false.B)
-    var n = 0
-    while (dut.io.memInitDone.peek().litValue == 0 && n < 60000) { dut.clock.step(1); n += 1 }
-    dut.io.memInitDone.expect(true.B)
-  }
-
-  /** 等 svc 空闲（连续 2 拍 mtBusy=0） */
-  private def waitSvcIdle(dut: ExactMatch, maxCyc: Int = 4000): Unit = {
-    var n = 0
-    var idleCnt = 0
-    while (idleCnt < 2 && n < maxCyc) {
-      dut.clock.step(1); n += 1
-      if (dut.io.status.mtBusy.peek().litValue == 0) idleCnt += 1 else idleCnt = 0
-    }
-  }
-
-  /** 下发一条维护命令并等它做完 */
-  private def wrCmd(dut: ExactMatch, op: Int, key: BigInt, ad: BigInt, maxCyc: Int = 4000): Unit = {
-    dut.io.wr.bits.op.poke(op.U)
-    dut.io.wr.bits.key.poke(key.U)
-    dut.io.wr.bits.ad.poke(ad.U)
-    dut.io.wr.valid.poke(true.B)
-    var n = 0
-    while (dut.io.wr.ready.peek().litValue == 0 && n < maxCyc) { dut.clock.step(1); n += 1 }
-    dut.clock.step(1)                       // 握手拍
-    dut.io.wr.valid.poke(false.B)
-    dut.clock.step(1)
-    waitSvcIdle(dut, maxCyc)
-  }
-
-  /** 单次查找，返回 (hit, ad) */
-  private def lookup(dut: ExactMatch, l: EmLayout, key: BigInt, maxCyc: Int = 4000): (Boolean, BigInt) = {
-    dut.io.key.bits.poke(key.U)
-    dut.io.key.valid.poke(true.B)
-    var n = 0
-    while (dut.io.key.ready.peek().litValue == 0 && n < maxCyc) { dut.clock.step(1); n += 1 }
-    dut.clock.step(1)                       // 握手拍
-    dut.io.key.valid.poke(false.B)
-    var rs: Option[(Boolean, BigInt)] = None
-    n = 0
-    while (rs.isEmpty && n < maxCyc) {
-      dut.clock.step(1); n += 1
-      if (dut.io.rsp.valid.peek().litValue == 1) {
-        val v = dut.io.rsp.bits.peek().litValue
-        rs = Some((((v >> l.adW) & 1) == 1, v & adMask(l)))
-      }
-    }
-    rs.getOrElse(fail("lookup 超时，未收到 rsp"))
-  }
-
-  private def entries(dut: ExactMatch): BigInt = dut.io.status.entries.peek().litValue
-  private def ktFree(dut: ExactMatch): BigInt = dut.io.status.ktFree.peek().litValue
-  private def adFreeCnt(dut: ExactMatch): BigInt = dut.io.status.adFree.peek().litValue
+  // 驱动 DUT 的公共脚手架（idle / initDut / wrCmd / lookup / 状态读取）在 EmTestSupport 里，
+  // 与 EmWaveSpec 共用一份。
 
   // =========================================================================
   // 按配置参数化：覆盖 useKt / useAd 的四种裁剪组合

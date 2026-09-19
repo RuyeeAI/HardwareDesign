@@ -1,59 +1,65 @@
 # EM（tb 预设）波形 review 预设视图
 #
-# 用法：surfer --command-file tools/em_tb/em_wave.sucl out/em_tb/em_tb.fst
+# 用法：surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd
 # 命令语法见 https://docs.surfer-project.org/book/commands/index.html
-# ⚠️ divider_add 的 NAME 必须是单个 token：带空格或标点（实测 · 也不行）会报 ExtraParameters
+# ⚠️ divider_add 的 NAME 必须是单个 token：空格、`·`、`&` 都会出问题
+# （实测 `&` 会被当成分隔符，把名字劈成两条命令 → ExtraParameters）
 # （命令文件扩展名约定 .sucl；每行一条命令，空行与 # 注释会被忽略）
+#
+# ⚠️ 信号路径与仿真来源绑定：
+#   Scala 侧仿真（sbt testOnly em.EmWaveSpec）出的波形层次是
+#   TOP.svsimTestbench.<端口> / TOP.svsimTestbench.dut.<内部信号>
+#   换用别的 TB 出波形时，这里的路径要跟着改。
 
 # 只显示叶子名，列表更紧凑（唯一性靠顺序分组保证）
 variable_force_name_type Local
 
-divider_add 时钟与复位
-variable_add tb.clock
-variable_add tb.reset
-variable_add tb.memInit
-variable_add tb.memInitDone
+divider_add clock_reset
+variable_add TOP.svsimTestbench.clock
+variable_add TOP.svsimTestbench.reset
+variable_add TOP.svsimTestbench.io_memInit
+variable_add TOP.svsimTestbench.io_memInitDone
 
-divider_add 寄存器握手
-variable_add tb.key_valid
-variable_add tb.key_ready
-variable_add tb.key_bits
-variable_add tb.rsp_valid
-variable_add tb.rsp_bits
-variable_add tb.wr_valid
-variable_add tb.wr_ready
-variable_add tb.wr_op
+divider_add interface
+variable_add TOP.svsimTestbench.io_key_valid
+variable_add TOP.svsimTestbench.io_key_ready
+variable_add TOP.svsimTestbench.io_key_bits
+variable_add TOP.svsimTestbench.io_rsp_valid
+variable_add TOP.svsimTestbench.io_rsp_bits
+variable_add TOP.svsimTestbench.io_wr_valid
+variable_add TOP.svsimTestbench.io_wr_ready
+variable_add TOP.svsimTestbench.io_wr_bits_op
 
-divider_add 查找流水线
-variable_add tb.dut.acqV
-variable_add tb.dut.r1V
-variable_add tb.dut.d1V
-variable_add tb.dut.d2V
-variable_add tb.dut.d3V
-variable_add tb.dut.d1Val_0
-variable_add tb.dut.d1Val_1
-variable_add tb.dut.d1Val_2
-variable_add tb.dut.d1Val_3
-variable_add tb.dut.d1FpSelC
-variable_add tb.dut.tblHit
+divider_add search_pipeline
+variable_add TOP.svsimTestbench.dut.acqV
+variable_add TOP.svsimTestbench.dut.r1V
+variable_add TOP.svsimTestbench.dut.d1V
+variable_add TOP.svsimTestbench.dut.d2V
+variable_add TOP.svsimTestbench.dut.d3V
+variable_add TOP.svsimTestbench.dut.d1Val_0
+variable_add TOP.svsimTestbench.dut.d1Val_1
+variable_add TOP.svsimTestbench.dut.d1Val_2
+variable_add TOP.svsimTestbench.dut.d1Val_3
+variable_add TOP.svsimTestbench.dut.d1FpSelC
+variable_add TOP.svsimTestbench.dut.tblHit
 
-divider_add svc引擎
-variable_add tb.dut.sState
-variable_add tb.dut.svcOwns
-variable_add tb.dut.agPend
-variable_add tb.dut.ovScIdx
-variable_add tb.dut.ovfcUseCnt
+divider_add svc_engine
+variable_add TOP.svsimTestbench.dut.sState
+variable_add TOP.svsimTestbench.dut.svcOwns
+variable_add TOP.svsimTestbench.dut.agPend
+variable_add TOP.svsimTestbench.dut.ovScIdx
+variable_add TOP.svsimTestbench.dut.ovfcUseCnt
 
-divider_add 计数与状态
-variable_add tb.st_entries
-variable_add tb.st_insert
-variable_add tb.st_insFail
-variable_add tb.st_ageDrop
-variable_add tb.st_learn
-variable_add tb.st_fpClash
-variable_add tb.st_ovfcUse
-variable_add tb.st_fwdUse
-variable_add tb.st_ktFree
-variable_add tb.st_adFree
+divider_add counter_status
+variable_add TOP.svsimTestbench.io_status_entries
+variable_add TOP.svsimTestbench.io_status_insert
+variable_add TOP.svsimTestbench.io_status_insFail
+variable_add TOP.svsimTestbench.io_status_ageDrop
+variable_add TOP.svsimTestbench.io_status_learn
+variable_add TOP.svsimTestbench.io_status_fpClash
+variable_add TOP.svsimTestbench.io_status_ovfcUse
+variable_add TOP.svsimTestbench.io_status_fwdUse
+variable_add TOP.svsimTestbench.io_status_ktFree
+variable_add TOP.svsimTestbench.io_status_adFree
 
 zoom_fit
