@@ -90,6 +90,14 @@ case class Memory(
     }
   }
 
+  /**
+   * `latency` —— **存储链路**延时：SRAM 固有 1 拍 + 可选 flopIn/flopOut。
+   * ⚠️ **不含 CheckIn / CheckOut**。它的语义是"从 Wrap 的输入寄存器（CheckIn 之后）
+   * 到 ECC 译码前的裸数据（CheckOut 之前）"的拍数，`MemInitCpuAccess` 的
+   * `cpuAccessCnt == latency` 与 Wrap3 里的 `gateReg` 都是按这个节点对齐的，别改。
+   *
+   * 要看"用户侧 re 拉高 → rdata 有效"的**端到端读延时**用 [[readLatency]]。
+   */
   def latency :Int = {
     var lat = 1
     if(flopIn){
@@ -100,6 +108,18 @@ case class Memory(
     }
     lat
   }
+
+  /**
+   * 端到端读延时：`io.lgc.re` 拉高那一拍算起，到 `io.lgc.rdata`（ECC 纠错后）可用的拍数。
+   *
+   *   readLatency = (CheckIn?1) + (flopIn?1) + 1(SRAM固有) + (flopOut?1) + (CheckOut?1)
+   *
+   * 即 `latency + CheckIn + CheckOut`。全部关闭时 = 1（EM 用的就是这个配置）；
+   * 默认值（flopOut/CheckOut 打开）= 3。
+   *
+   * ⚠️ 消费方必须按这个数插流水级 —— 用 `latency` 会少算 CheckIn/CheckOut。
+   */
+  def readLatency :Int = latency + (if (CheckIn) 1 else 0) + (if (CheckOut) 1 else 0)
 
   /** SECDED 校验位宽公式单点实现（委托 EccCodec，公式详见 eccWidthOf） */
   def eccWidth(n:Int):Int = EccCodec.eccWidthOf(n)
@@ -560,7 +580,10 @@ class SpMemoryWrap3(mem: Memory) extends Module {
   private val wdataFlopped = if (mem.CheckIn) RegEnable(io.lgc.wdata, io.lgc.we) else io.lgc.wdata
   private val weFlopped    = if (mem.CheckIn) RegNext(io.lgc.we,    false.B) else io.lgc.we
   private val reFlopped    = if (mem.CheckIn) RegNext(io.lgc.re,    false.B) else io.lgc.re
-  private val addrFlopped  = if (mem.CheckIn) RegEnable(io.lgc.addr,  io.lgc.we) else io.lgc.addr
+  // ⚠️ SP 只有一个 addr，读写共用 → 必须在 we||re 时都采样。
+  // 若只按 we 采样，纯读访问的地址根本不会被捕获，读任意地址都会返回
+  // "最后一次写入的地址"的数据（TP 版 raddrFlopped 按 re 采样，没这个问题）。
+  private val addrFlopped  = if (mem.CheckIn) RegEnable(io.lgc.addr,  io.lgc.we || io.lgc.re) else io.lgc.addr
 
   private val memWrap = Module(new SpMemoryWrap(mem))
   memWrap.clk   := clock
@@ -611,14 +634,15 @@ class SpMemoryWrap3(mem: Memory) extends Module {
   }
 
   // ── Memory input mux (priority: init > CPU-start > CPU-block > user) ──
+  // 地址单独提出来：既驱动 memory，也喂给出错地址的对齐链（见下）
+  private val memAddr = Mux(initActive, initAddr, Mux(cpuMemStart, cpuAddr, addrFlopped))
   memWrap.lgc.we    := Mux(initActive, initWe,
                           Mux(cpuMemStart, cpuWe,
                             Mux(cpuBlockUser, false.B, weFlopped)))
   memWrap.lgc.re    := Mux(initActive, false.B,
                           Mux(cpuMemStart, cpuRe,
                             Mux(cpuBlockUser, false.B, reFlopped)))
-  memWrap.lgc.addr  := Mux(initActive, initAddr,
-                          Mux(cpuMemStart, cpuAddr, addrFlopped))
+  memWrap.lgc.addr  := memAddr
   memWrap.lgc.wdata := encodedWdata
 
   // ── ECC decode output path ───────────────────────────────────────
@@ -637,7 +661,19 @@ class SpMemoryWrap3(mem: Memory) extends Module {
   val rdataOutReg = if(mem.CheckOut) RegEnable(decData, gateReg) else decData
   val errOutReg   = if(mem.CheckOut) RegNext(errOut & gateReg) else errOut & gateReg
   val uerrOutReg  = if(mem.CheckOut) RegNext(uerrOut & gateReg) else uerrOut & gateReg
-  val errAddrReg  = if(mem.CheckOut) RegEnable(addrFlopped, errOutReg || uerrOutReg) else addrFlopped
+
+  // ── 出错那次读的地址 ─────────────────────────────────────────────
+  // ⚠️ 不能直接抓"报错当拍正在发起的地址"：读地址在发起读之后就不再变，
+  // 报错当拍看见的已经是**该错误之后 mem.latency 拍**的新读地址（实测报的是上一个读地址）。
+  // 正确做法：把实际送进 SRAM 的地址按同样级数推进，再在报错那拍锁存。
+  // 输出用 Mux 而不是 RegEnable：报错那拍要**直出**真值（否则又晚一拍），
+  // 不报错的拍保持上一次的值，便于事后读 DFX。
+  private val errAddrPiped = {
+    val pre = ShiftRegister(memAddr, mem.latency, 0.U(mem.addrWidth.W), true.B)
+    if (mem.CheckOut) RegNext(pre) else pre
+  }
+  private val errAddrHold = RegEnable(errAddrPiped, errOutReg || uerrOutReg)
+  val errAddrReg = Mux(errOutReg || uerrOutReg, errAddrPiped, errAddrHold)
 
   // Gate user-logic outputs during CPU access
   io.lgc.rdata  := Mux(cpuBlockUser, 0.U, rdataOutReg)
@@ -731,6 +767,8 @@ class TpMemoryWrap3(mem: Memory) extends Module {
   }
 
   // ── Memory input mux (priority: init > CPU-start > CPU-block > user) ──
+  // 读地址单独提出来：既驱动 memory，也喂给出错地址的对齐链（见下）
+  private val memRaddr = Mux(cpuMemStart, cpuRaddr, Mux(cpuBlockUser, 0.U, raddrFlopped))
   memWrap.lgc.we    := Mux(initActive, initWe,
                           Mux(cpuMemStart, cpuWe,
                             Mux(cpuBlockUser, false.B, weFlopped)))
@@ -739,8 +777,7 @@ class TpMemoryWrap3(mem: Memory) extends Module {
                             Mux(cpuBlockUser, false.B, reFlopped)))
   memWrap.lgc.waddr := Mux(initActive, initAddr,
                           Mux(cpuMemStart, cpuWaddr, waddrFlopped))
-  memWrap.lgc.raddr := Mux(cpuMemStart, cpuRaddr,
-                          Mux(cpuBlockUser, 0.U, raddrFlopped))
+  memWrap.lgc.raddr := memRaddr
   memWrap.lgc.wdata := encodedWdata
 
   // ── Bypass (disabled during CPU access) ──────────────────────────
@@ -766,7 +803,19 @@ class TpMemoryWrap3(mem: Memory) extends Module {
                     else Mux(bypassValid, bypassData, decData)
   val errOutReg   = if(mem.CheckOut) RegNext(errOut & gateReg) else errOut & gateReg
   val uerrOutReg  = if(mem.CheckOut) RegNext(uerrOut & gateReg) else uerrOut & gateReg
-  val errAddrReg  = if(mem.CheckOut) RegEnable(raddrFlopped, errOutReg || uerrOutReg) else raddrFlopped
+
+  // ── 出错那次读的地址 ─────────────────────────────────────────────
+  // ⚠️ 不能直接抓"报错当拍正在发起的地址"：读地址在发起读之后就不再变，
+  // 报错当拍看见的已经是**该错误之后 mem.latency 拍**的新读地址（实测报的是上一个读地址）。
+  // 正确做法：把实际送进 SRAM 的读地址按同样级数推进，再在报错那拍锁存。
+  // 输出用 Mux 而不是 RegEnable：报错那拍要**直出**真值（否则又晚一拍），
+  // 不报错的拍保持上一次的值，便于事后读 DFX。
+  private val errAddrPiped = {
+    val pre = ShiftRegister(memRaddr, mem.latency, 0.U(mem.addrWidth.W), true.B)
+    if (mem.CheckOut) RegNext(pre) else pre
+  }
+  private val errAddrHold = RegEnable(errAddrPiped, errOutReg || uerrOutReg)
+  val errAddrReg = Mux(errOutReg || uerrOutReg, errAddrPiped, errAddrHold)
 
   // Gate user-logic outputs during CPU access
   io.lgc.rdata  := Mux(cpuBlockUser, 0.U, rdataOutReg)
