@@ -196,7 +196,7 @@ class CpuRsPort(val addrWidth: Int, val dataWidth: Int) extends Bundle {
 }
 
 class SpMemoryBB(mem:Memory) extends BlackBox{
-  override def desiredName=mem.name+"_SP_BB_"+mem.depth+"X_"+mem.dataWidth
+  override def desiredName="RAM_SP_"+mem.depth+"X"+mem.dataWidth+"_"+mem.name
   val io = IO(new Bundle{
     val clk   = Input(Clock())
     val we    = Input(UInt(1.W))
@@ -208,7 +208,7 @@ class SpMemoryBB(mem:Memory) extends BlackBox{
 }
 
 class TpMemoryBB(mem:Memory) extends BlackBox{
-  override def desiredName=mem.name+"_TP_BB_"+mem.depth+"X_"+mem.dataWidth
+  override def desiredName="RAM_TP_"+mem.depth+"X"+mem.dataWidth+"_"+mem.name
   val io = IO(new Bundle{
     val clk   = Input(Clock())
     val we    = Input(UInt(1.W))
