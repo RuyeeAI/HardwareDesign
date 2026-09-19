@@ -18,6 +18,7 @@ PRESET=tb                              # TB 与该预设绑定（端口位宽 + 
 VDIR="${REPO_ROOT}/out/em/${PRESET}"       # EmGen 产出的 Verilog 目录
 WDIR="${REPO_ROOT}/out/em_tb"            # 波形 + obj_dir
 FMT=fst
+WAVE=1
 OPEN_GUI=1
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
@@ -27,6 +28,8 @@ usage() {
 
   --fst        输出 FST（默认；体积比 VCD 小很多）
   --vcd        输出 VCD（可用 tools/em_tb/vcd_check.py 做自动检查）
+  --no-wave    不出波形：Verilator 不加 trace 开关（TB 里的 \$dumpvars 会被忽略），
+               仿真更快，也不起 Surfer —— 只要 PASS/FAIL 和打印日志时用这个
   --no-open    不自动启动 Surfer
   -h, --help   显示本帮助
 
@@ -38,6 +41,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --fst)     FMT=fst ;;
     --vcd)     FMT=vcd ;;
+    --no-wave) WAVE=0; OPEN_GUI=0 ;;
     --no-open) OPEN_GUI=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 1 ;;
@@ -60,11 +64,15 @@ echo "== [1/4] 生成 Verilog（preset=${PRESET}）============================"
 [ -f "${VDIR}/ExactMatch.v" ] || { echo "没生成 ${VDIR}/ExactMatch.v" >&2; exit 1; }
 
 echo
-echo "== [2/4] Verilator 编译（格式 ${FMT}，${JOBS} 线程）=================="
-if [ "${FMT}" = fst ]; then
-  TRACE_FLAG=--trace-fst; DEF_FLAG=+define+WAVE_FST
+echo "== [2/4] Verilator 编译（波形=${FMT} 开关=${WAVE}，${JOBS} 线程）=============="
+# 波形开关就在这一处：Verilator 不加 --trace* 时，TB 里的 $dumpfile/$dumpvars 会被直接忽略
+# （实测 0 报错、不落文件，而且仿真更快）。TRACE_FLAG 为空时要能展开成"没有参数"，故不加引号。
+if [ "${WAVE}" = 0 ]; then
+  TRACE_FLAG="";              DEF_FLAG=+define+NO_WAVE
+elif [ "${FMT}" = fst ]; then
+  TRACE_FLAG=--trace-fst;     DEF_FLAG=+define+WAVE_FST
 else
-  TRACE_FLAG=--trace;     DEF_FLAG=+define+WAVE
+  TRACE_FLAG=--trace;         DEF_FLAG=+define+WAVE
 fi
 verilator --binary --timing "${TRACE_FLAG}" -Wno-fatal -j "${JOBS}" \
           --top-module tb -Mdir "${WDIR}/obj_dir" -o em_tb \
@@ -74,14 +82,19 @@ verilator --binary --timing "${TRACE_FLAG}" -Wno-fatal -j "${JOBS}" \
 echo
 echo "== [3/4] 跑 testbench（7 个场景阶段）============================="
 (cd "${WDIR}" && ./obj_dir/em_tb)
-[ -f "${WAVE_FILE}" ] || { echo "没产出波形 ${WAVE_FILE}" >&2; exit 1; }
 
 echo
+if [ "${WAVE}" = 0 ]; then
+  echo "== [4/4] --no-wave：本次没有产波形（TB 里的 \$dumpvars 被 Verilator 忽略） =="
+  exit 0
+fi
+
+[ -f "${WAVE_FILE}" ] || { echo "没产出波形 ${WAVE_FILE}" >&2; exit 1; }
 echo "== [4/4] 波形：${WAVE_FILE} ($(du -h "${WAVE_FILE}" | cut -f1)) =="
 if [ "${FMT}" = vcd ]; then
   echo "   自动检查：python3 ${SCRIPT_DIR}/vcd_check.py ${WAVE_FILE}"
 fi
-if [ "$OPEN_GUI" = 1 ]; then
+if [ "${OPEN_GUI}" = 1 ]; then
   echo "   启动 Surfer（关掉窗口后本脚本才返回）..."
   exec surfer --command-file "${SCRIPT_DIR}/em_wave.sucl" "${WAVE_FILE}"
 else

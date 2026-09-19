@@ -174,7 +174,7 @@ class ExactMatch(params: EmParams) extends Module {
   private val memReady = htMems.map(_.io.dfx.initDone).reduce(_ && _) &&
     ktMem.map(_.io.dfx.initDone).getOrElse(true.B) &&
     adMem.map(_.io.dfx.initDone).getOrElse(true.B) && !io.memInit
-  io.memInitDone := memReady
+  io.memInitDone := RegNext(memReady,false.B)
 
   // =========================================================================
   // CRC / 哈希

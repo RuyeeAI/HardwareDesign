@@ -217,7 +217,9 @@ module tb;
     doLookup(16'h4000, hit, ad, "P7 查最早插入(应 hit)");
     doLookup(16'h4001, hit, ad, "P7 再查一条");
 
-`ifdef WAVE_FST
+`ifdef NO_WAVE
+    $display("[%0t] ==== 仿真结束（本次未开启波形 dump）====", $time);
+`elsif WAVE_FST
     $display("[%0t] ==== 波形 dump 结束，写入 em_tb.fst ====", $time);
 `else
     $display("[%0t] ==== 波形 dump 结束，写入 em_tb.vcd ====", $time);
