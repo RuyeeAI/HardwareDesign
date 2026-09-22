@@ -10,6 +10,13 @@
 #   Scala 侧仿真（sbt testOnly em.EmWaveSpec）出的波形层次是
 #   TOP.svsimTestbench.<端口> / TOP.svsimTestbench.dut.<内部信号>
 #   换用别的 TB 出波形时，这里的路径要跟着改。
+#
+# ⚠️ 子模块层次（阶段 1/2/3 重构后，svc/OVFC/老化的内部信号不再在 dut 顶层）：
+#   dut.eng.*      SvcEngine：维护/自学习/老化状态机（sState / svcOwns / sUseOv / …）
+#   dut.ovf.*      OvfTable ：OVFC 条目阵列与扫描游标（scIdx / use_0 / …）
+#   dut.agSched.*  AgeSched：老化扫描仲裁与 pending 目标（pend / pendOv / …）
+#   dut.ageTab.*   AgeTable：valid/claim 阵列 + 扫描器（curB/curI/curW / dCur* / …）
+#   dut.ktFree.* / dut.adFree.*  FreeList（bitmap / allocIdx / …）
 
 # 只显示叶子名，列表更紧凑（唯一性靠顺序分组保证）
 variable_force_name_type Local
@@ -44,11 +51,11 @@ variable_add TOP.svsimTestbench.dut.d1FpSelC
 variable_add TOP.svsimTestbench.dut.tblHit
 
 divider_add svc_engine
-variable_add TOP.svsimTestbench.dut.sState
-variable_add TOP.svsimTestbench.dut.svcOwns
-variable_add TOP.svsimTestbench.dut.agPend
-variable_add TOP.svsimTestbench.dut.ovScIdx
-variable_add TOP.svsimTestbench.dut.ovfcUseCnt
+variable_add TOP.svsimTestbench.dut.eng.sState
+variable_add TOP.svsimTestbench.dut.eng.svcOwns
+variable_add TOP.svsimTestbench.dut.eng.sUseOv
+variable_add TOP.svsimTestbench.dut.agSched.pend
+variable_add TOP.svsimTestbench.dut.ovf.scIdx
 
 divider_add counter_status
 variable_add TOP.svsimTestbench.io_status_entries

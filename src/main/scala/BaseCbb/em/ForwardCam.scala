@@ -21,7 +21,10 @@ import chisel3.util._
 // 重复 key：同 key 可能有多条在途（连续 Miss），比对时取**最新**一条
 //   （L2 学习的语义是"最后一次学到的入端口生效"）。
 //
-// 反压：CAM 满时上层拉低 io.key.ready，避免漏学。
+// CAM 满：**不反压**，上层直接丢弃本次学习并累加 learnDrop（见 ExactMatch.learnReq）。
+//   为什么不做反压：push 发生在流水线"判定 miss"那一拍（cm），比接收拍（io.key.ready）
+//   晚 2~3 拍，用满标志去卡 ready 既救不了已经进管道的那个请求，又会破坏命中流量的 II=1。
+//   所以这里把"容量不足"定义成可观测的丢弃事件（learnDrop），而不是流控。
 // ===========================================================================
 
 class ForwardCam(depth: Int, keyW: Int, adW: Int) extends Module {

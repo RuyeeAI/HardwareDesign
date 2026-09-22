@@ -27,9 +27,10 @@ import BaseCbb.memory.MemoryProtectType.MemoryProtectType
 //   的条目"，否则本次查找会撞上别人的指纹而误判 —— 见 EmLayout 的插入规则说明。
 //
 // 【流水线版布局要点】
-//   1. HT 的 SRAM 只存 payload；valid / 时间戳 / claim 位放在 HT 旁的
-//      寄存器阵列（AgeTable）：查找时 valid 组合读出，老化扫描只扫寄存器，
-//      **扫描不占访存带宽**。
+//   1. HT 的 SRAM 只存 payload；valid / claim 位放在 HT 旁的**寄存器阵列**（AgeTable）：
+//      查找时组合读出。时间戳另放一块**独立 SRAM**（自己的读写端口）——老化扫描读它
+//      **不占 HT/KT/AD 的访存带宽**，所以 II=1 仍然成立，同时省掉逐条 ts 的寄存器开销
+//      （见 EmLayout.ageRegW / ageTsDepth 的说明）。
 //   2. KT 是**单实例**存储 + 全局 FreeList：每次查找只读 1 路，不需要按 (bank,way) 分 bank
 //      并行读，因此指针回到全局 ktDepth 空间、容量全局共享。
 //   3. AD 从 SP 改为 TP：维护写 AD 与流水线读 AD 不再互斥。
@@ -210,14 +211,35 @@ final case class EmLayout(p: EmParams) {
   val ageW1   = math.max(1, ageW)
   val sweepOn = p.aging.exists(_.sweepEnable)
   val agingOn = p.aging.isDefined
+  // `expired` 是 `(now - ts) >= timeout`，now/ts 都只有 ageW1 位：timeout 装不进就会被
+  // 静默截断（比如 ageW=8 却给 timeout=300 → 截成 44），语义完全变掉。这里挡在 elaboration。
+  // tickDiv 同理，`tickDiv - 1` 为负会退化成"永不自增"。
+  p.aging.foreach { a =>
+    require(a.ageWidth >= 1, s"ageWidth(${a.ageWidth}) 必须 >= 1")
+    require(a.timeout >= 1, s"timeout(${a.timeout}) 必须 >= 1")
+    require(a.timeout < (1 << ageW1),
+      s"timeout(${a.timeout}) 必须 < 2^${ageW1}=${1 << ageW1}（时间戳只有 ${ageW1} 位，否则会被截断）")
+    require(a.tickDiv >= 1, s"tickDiv(${a.tickDiv}) 必须 >= 1")
+  }
 
-  // ---- HT：SRAM 只存 payload，valid/ts/claim 在 AgeTable ----
+  // ---- HT：SRAM 只存 payload；valid/claim 在 AgeTable 的寄存器阵列，**时间戳在独立 SRAM** ----
   //   useKt  : 负载 = {指纹 fp, KT 全局索引 ktPtr}
   //   !useKt : 负载 = key + (useAd ? adPtr : ad)   （key 内联，不需要指纹）
   val htPayW   = if (p.useKt) fpW + ktPtrW else (keyW + (if (p.useAd) adPtrW else adW))
   val htWordW  = htPayW * ways          // 一个 HT word = 一整桶（ways 条 payload）
-  val ageEntryW = 1 + ageW + 1          // valid + ts + claim
   val ageWords = p.htDepth * ways       // 老化阵列总条目数（= HT 总条目数）
+
+  // 逐条时间戳的寄存器代价是 ageWords × ageW 个 flop（2left 预设 = 4×1024×16 = 65536 flop），
+  // 比 HT SRAM 还大。所以 ts 放**独立 SRAM**（ageWords × ageW 位），寄存器里只留 valid+claim
+  // 两位。ts SRAM 有自己的读写端口，扫描读它不占 HT/KT/AD 的访存带宽 —— "扫描不占带宽"这个
+  // 设计目标不受影响（这正是 ts 不放回 HT SRAM 的原因：放回去就得机会式扫描，拿查找带宽换）。
+  val ageRegW    = 2                    // valid + claim（寄存器阵列；ts 见下）
+  val ageTsDepth = ageWords             // ts SRAM 深度
+  val ageTsAddrW = math.max(1, log2Ceil(ageWords))
+  if (agingOn) {
+    // ts SRAM 只有一层地址译码，深度 1 会让 addrWidth=0、端口宽度对不上
+    require(ageWords >= 2, s"老化需要 htDepth*ways >= 2（当前 ${ageWords}）")
+  }
 
   // ---- KT 条目: [keyW-1:0]=key, 高位 = (useAd ? adPtr : ad) ----
   val ktPayW   = if (p.useAd) adPtrW else adW

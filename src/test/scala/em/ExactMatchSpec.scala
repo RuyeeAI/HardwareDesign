@@ -126,6 +126,56 @@ class ExactMatchSpec extends AnyFlatSpec with Matchers with EmTestSupport {
   }
 
   // =========================================================================
+  // 自学习 + 表满：转发 CAM 必须能排空
+  // =========================================================================
+  // 这是"插入失败时也要弹 CAM"的回归用例。
+  // 背景：学习任务的插入在 S_ALLOC 可能分配不到（HT 与 OVFC 都满）→ insFail。若此时不弹出
+  //   转发 CAM，head 永远不变、fwdPending 恒真，S_IDLE 会一次次重启同一个必然失败的任务：
+  //   只要表是满的，svc 引擎就永远空转在这一个 key 上（后续 key 全被饿死，且反复冻结流水线）。
+  // 判据：停止灌入后 fwdUse 必须回到 0。空转时它会卡在非 0 上永远不下来。
+  "自学习" should "表满后插入失败时转发 CAM 能排空（不空转在必然失败的 head 上）" in {
+    val p = EmGen.preset("tb") // HT 32x2x2 = 64 条 + OVFC 8 条 = 72；灌 100 个 key 必溢出
+    val l = EmLayout(p)
+    simulate(new ExactMatch(p)) { dut =>
+      initDut(dut)
+      val PORT = BigInt(0x7)
+      dut.io.learnEn.poke(true.B)
+      dut.io.learnAd.poke(PORT.U)
+
+      def fwdUse(): BigInt = dut.io.status.fwdUse.peek().litValue
+
+      // 查 100 个都不存在的 key：miss 即压入转发 CAM，svc 逐个学进表里，直到表满。
+      // 每个 key 之后留一段时间让 svc 学完（CAM 只有 8 深，灌太快会变成"漏学"而不是"表满"）。
+      for (i <- 0 until 100) {
+        lookup(dut, l, BigInt(0x8000 + i))
+        dut.clock.step(200)
+      }
+      withClue("灌完之后表应当是满的（insFail 有增长，证明确实走到过分配失败）：") {
+        insFail(dut) should be > BigInt(0)
+      }
+
+      // 不再灌入：svc 应把 CAM 里剩余的条目全部处理掉（成功插入的 pop、失败丢弃的也 pop）
+      var n = 0
+      while (fwdUse() != 0 && n < 20000) { dut.clock.step(1); n += 1 }
+      withClue(s"停止灌入后转发 CAM 必须排空，但 fwdUse=${fwdUse()}（svc 空转在插入失败的 head 上）：") {
+        fwdUse() shouldBe BigInt(0)
+      }
+
+      // 表里已学到的 key 仍必须查得到（学到的 ad = learnAd）
+      dut.io.learnEn.poke(false.B)
+      val (h, a) = lookup(dut, l, BigInt(0x8000))
+      withClue("已学到的 key 应命中且返回 learnAd：") { h shouldBe true; a shouldBe PORT }
+
+      // 空转会让 insFail 无限增长：静置一段时间后它不应再涨
+      val f0 = insFail(dut)
+      dut.clock.step(500)
+      withClue(s"表满且无新 miss 时不应继续尝试插入（insFail ${f0} → ${insFail(dut)}）：") {
+        insFail(dut) shouldBe f0
+      }
+    }
+  }
+
+  // =========================================================================
   // 需求1：每拍处理一个请求（命中流量下 II=1）
   // =========================================================================
   "需求1 每拍一请求" should "命中流量下 rsp.valid 连续不间断、且每个响应都是正确命中" in {

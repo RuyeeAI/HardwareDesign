@@ -75,8 +75,13 @@ object EmGen {
       f"kt=${p.ktDepth}(单实例,全局指针) ad=${p.adDepth} ovfc=${p.ovfcDepth}")
     println(s"[em]   useKt=${p.useKt} useAd=${p.useAd} crc=${p.crc.getClass.getSimpleName} " +
       s"aging=${p.aging.isDefined} learning=${p.learning.isDefined} protect=${p.memProtect}")
-    println(s"[em]   HT负载=${l.htPayW}b（指纹 ${l.fpW}b + KT指针 ${l.ktPtrW}b）  KT条目=${l.ktEntryW}b  " +
-      s"老化条目=${l.ageEntryW}b  查找延迟=${l.lookupLatency}拍（II=1，CrcHardwired 下）")
+    println(s"[em]   HT负载=${l.htPayW}b（指纹 ${l.fpW}b + KT指针 ${l.ktPtrW}b）  KT条目=${l.ktEntryW}b  查找延迟=${l.lookupLatency}拍（II=1，CrcHardwired 下）")
+    if (l.agingOn) {
+      println(s"[em]   老化：valid/claim 寄存器阵列 ${l.ageWords}x${l.ageRegW}b（${l.ageWords * l.ageRegW} flop）" +
+        s" + 时间戳 SRAM ${l.ageTsDepth}x${l.ageW}b（${l.ageTsDepth * l.ageW} bit，rdLat=1，不占查找带宽）")
+    } else {
+      println(s"[em]   老化：关闭（valid/claim 寄存器阵列仍存在：${l.ageWords}x${l.ageRegW}b）")
+    }
     println(s"[em]   存储读延时=${l.rdLat}拍（flopIn=${p.memFlopIn} flopOut=${p.memFlopOut} " +
       s"CheckIn=${p.memCheckIn} CheckOut=${p.memCheckOut}）")
 
