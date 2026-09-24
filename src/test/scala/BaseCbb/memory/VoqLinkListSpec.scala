@@ -1,7 +1,7 @@
 package BaseCbb.memory
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
+import BaseCbb.Sim._
 import chisel3.util.{log2Ceil, ShiftRegister}
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers

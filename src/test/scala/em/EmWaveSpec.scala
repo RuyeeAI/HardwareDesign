@@ -10,8 +10,8 @@ import org.scalatest.matchers.should.Matchers
 //
 //   sbt "testOnly em.EmWaveSpec"
 //
-// 跑完在 out/em_wave/workdir-verilator/trace.vcd 出波形，用预设视图打开：
-//   surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd
+// 跑完在 out/em_wave/workdir-verilator/trace.fst 出波形，用预设视图打开：
+//   surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.fst
 //
 // 场景是原来的 7 个阶段（P1..P7），每个阶段前留一段空闲拍，波形上能直接看出阶段边界；
 // 同时把关键观测值 println 出来，没查看器也能读。
@@ -22,7 +22,7 @@ import org.scalatest.matchers.should.Matchers
 // 而且比波形侧更权威（peek 读的是仿真器的真实值，不是 trace 采样）。
 //
 // ⚠️ 只在 preset("tb") 上有意义：端口位宽、内部信号名、老化 timeout 都绑这个预设。
-// ⚠️ 波形落盘路径、VCD/FST 限制、"必须调 .result" 等，见 WaveSimulator 的注释。
+// ⚠️ 波形落盘路径（FST）、"必须调 .result" 等，见 WaveSimulator 的注释。
 // ===========================================================================
 class EmWaveSpec extends AnyFlatSpec with Matchers with EmTestSupport {
 
@@ -45,8 +45,9 @@ class EmWaveSpec extends AnyFlatSpec with Matchers with EmTestSupport {
 
   "EM 波形场景" should "跑完 P1..P7 并产出波形（需求 1/2/3 + OVFC 都能在波形上看到）" in {
     val sim = new WaveSimulator("out/em_wave")
-    val digest = sim.simulate(new ExactMatch(p)) { (controller, dut) =>
-      controller.setTraceEnabled(true)
+    val digest = sim.simulateUninitialized(new ExactMatch(p)) { simDut =>
+      simDut.controller.setTraceEnabled(true)
+      val dut = simDut.wrapped
       hsCnt = 0; rspCnt = 0
 
       // ---- P1 复位 + 存储初始化 ----

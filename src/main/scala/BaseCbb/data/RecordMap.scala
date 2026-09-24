@@ -4,13 +4,13 @@ package BaseCbb.data
 
 import chisel3._
 import scala.collection.immutable.ListMap
-import chisel3.internal.requireIsChiselType
 import chisel3.reflect.DataMirror.internal.chiselTypeClone
 
 final class RecordMap[T <: Data] (eltMap: ListMap[String, T])
     extends Record {
 
-  eltMap.foreach { case (name, elt) => requireIsChiselType(elt, name) }
+  // chisel 7 移除了内部 API `chisel3.internal.requireIsChiselType`；非法元素会在下面的
+  // chiselTypeClone 处报错，这里不再单独做"是否为 chisel 类型"的前置检查。
 
   // This is needed for Record
   val elements = ListMap[String, T]() ++ eltMap.mapValues(chiselTypeClone(_).asInstanceOf[T])  // mapValues return value is lazy

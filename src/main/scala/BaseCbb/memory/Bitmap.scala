@@ -19,6 +19,7 @@ class Bitmap(RscNum:Int) extends GenModule{
     val ret_ptr = Input(UInt(log2Ceil(RscNum).W))
     val empty   = Output(Bool())
     val full    = Output(Bool())
+    val cnt     = Output(UInt(log2Ceil(RscNum + 1).W))   // 当前可用资源数（EM 的 status 用）
   })
 
   // 位图：1 = 可用，0 = 已分配；初始全 1（全可用）—— 与 BitmapKernel 统一语义
@@ -33,4 +34,5 @@ class Bitmap(RscNum:Int) extends GenModule{
   }
   io.empty := BitmapKernel.isEmpty(bitmap)
   io.full  := BitmapKernel.isFull(bitmap)
+  io.cnt   := BitmapKernel.freeCount(bitmap)
 }

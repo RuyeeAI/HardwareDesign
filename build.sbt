@@ -1,10 +1,10 @@
-ThisBuild / scalaVersion     := "2.13.12"
+ThisBuild / scalaVersion     := "2.13.16"
 ThisBuild / version          := "0.1.0"
 ThisBuild / organization     := "com.github.ethanhau"
 
-// 与 topdesign_dpsk / TopDesign 对齐：Chisel 5.3.0（org.chipsalliance）。
-// 仿真统一走 chisel3.simulator（随 chisel 提供），不再依赖已停止维护的 chiseltest。
-val chiselVersion = "5.3.0"
+// Chisel 7.15.0（org.chipsalliance）：svsim 的 Verilator 后端自此支持 FST 波形
+// （TraceKind.Fst，chisel 5.3/6.x 只有 VCD）。仿真统一走 chisel3.simulator。
+val chiselVersion = "7.15.0"
 
 lazy val root = (project in file("."))
   .settings(

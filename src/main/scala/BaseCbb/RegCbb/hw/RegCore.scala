@@ -498,7 +498,7 @@ class RegFileTop(map: RegFileMap, addrWidth: Int = 32, dataWidth: Int = 32) exte
       }
       is(stRmwRead) {
         when(port.ack) {
-          memWdata := MuxLookup(memWord, port.rdata,
+          memWdata := MuxLookup(memWord, port.rdata)(
             (0 until mem.wordCount).map { p =>
               p.U -> patch(port.rdata, p * dataWidth, p * dataWidth + dataWidth - 1, memWdata, eW)
             })

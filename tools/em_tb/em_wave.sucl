@@ -1,6 +1,6 @@
 # EM（tb 预设）波形 review 预设视图
 #
-# 用法：surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd
+# 用法：surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.fst
 # 命令语法见 https://docs.surfer-project.org/book/commands/index.html
 # ⚠️ divider_add 的 NAME 必须是单个 token：空格、`·`、`&` 都会出问题
 # （实测 `&` 会被当成分隔符，把名字劈成两条命令 → ExtraParameters）
@@ -13,10 +13,10 @@
 #
 # ⚠️ 子模块层次（阶段 1/2/3 重构后，svc/OVFC/老化的内部信号不再在 dut 顶层）：
 #   dut.eng.*      SvcEngine：维护/自学习/老化状态机（sState / svcOwns / sUseOv / …）
+#                  内含 Bitmap ×2（dut.eng.ktFree.* / dut.eng.adFree.*：bitmap / req_ptr / …）
 #   dut.ovf.*      OvfTable ：OVFC 条目阵列与扫描游标（scIdx / use_0 / …）
 #   dut.agSched.*  AgeSched：老化扫描仲裁与 pending 目标（pend / pendOv / …）
 #   dut.ageTab.*   AgeTable：valid/claim 阵列 + 扫描器（curB/curI/curW / dCur* / …）
-#   dut.ktFree.* / dut.adFree.*  FreeList（bitmap / allocIdx / …）
 
 # 只显示叶子名，列表更紧凑（唯一性靠顺序分组保证）
 variable_force_name_type Local

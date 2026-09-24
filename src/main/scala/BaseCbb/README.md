@@ -21,7 +21,7 @@ BaseCbb 是一个基于 Chisel 的硬件设计基础库，提供常用电路模�
 | `misc/` | `BaseCbb.misc`（`Timer.scala`/`Shaper.scala` 为 `BaseCbb.utils.timer`） | 延迟队列族、分发/重发、移位寄存器、组合工具（MuxT/Str/Random 等） |
 | `io/` | `BaseCbb.io` | 主机侧工具：文件、JSON、生成期 PRNG、结构化相等 |
 | `data/` | `BaseCbb.data` | GenBundle/GenModule（全库基类）、异构 Record 容器 |
-| `annotation/` | `BaseCbb.annotation` | 后端 FIRRTL 注解（SRAM/中断/参数） |
+| ~~`annotation/`~~ | ~~`BaseCbb.annotation`~~ | **已删除**（chisel 7 移除 FIRRTL 注解机制；`DescribedSRAM` 改为 elaboration 期打印） |
 | `Area/` | `BaseCbb.Area` | 工艺面积估算 |
 | `Clos/` | `BaseCbb.Clos` | Benes 置换网络 |
 | `RegCbb/` | `BaseCbb.RegCbb(.dsl/.hw/.gen/.demo)` | 寄存器文件框架（v2）：IR → 地址分配 → RTL → 用户视图 → 文档/软件视图生成 |
@@ -89,7 +89,8 @@ BaseCbb 是一个基于 Chisel 的硬件设计基础库，提供常用电路模�
 
 - `io/`：`ReadFile/WriteFile/ReadStdIO`、`JsonTools`、`SeededRandom`、`SimpleProduct`（主机侧）
 - `data/`：`GenModule/GenBundle/fldAttr`、`HeterogeneousBag`、`RecordMap`
-- `annotation/`：`SRAMAnnotation/InterruptsPortAnnotation/GlobalConstantsAnnotation/ParamsAnnotation` + `Annotated`
+- `annotation/`：**已删除**（chisel 7 移除 FIRRTL 注解机制；原 `SRAMAnnotation/InterruptsPortAnnotation/...`
+  + `Annotated` 不复存在，`DescribedSRAM` 改为 elaboration 期打印描述）
 - `Area/`：`ProcessConfiguration`、`GenArea`
 - `Clos/`：`BenesClos2x2/BenesClos/Benes`
 

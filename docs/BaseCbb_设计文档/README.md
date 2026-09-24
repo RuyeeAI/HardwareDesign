@@ -19,7 +19,7 @@
 | [07_misc.md](07_misc.md) | `misc/` | `BaseCbb.misc`、`BaseCbb.utils.timer`（部分） |
 | [08_io.md](08_io.md) | `io/` | `BaseCbb.io` |
 | [09_data.md](09_data.md) | `data/` | `BaseCbb.data` |
-| [10_annotation.md](10_annotation.md) | `annotation/` | `BaseCbb.annotation` |
+| [10_annotation.md](10_annotation.md) | ~~`annotation/`~~（已删） | ~~`BaseCbb.annotation`~~（chisel 7 移除 FIRRTL 注解） |
 | [11_Area.md](11_Area.md) | `Area/` | `BaseCbb.Area` |
 | [12_Clos.md](12_Clos.md) | `Clos/` | `BaseCbb.Clos` |
 | [13_RegCbb.md](13_RegCbb.md) | `RegCbb/` | `BaseCbb.RegCbb(.dsl/.hw/.gen/.demo)` |

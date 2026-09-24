@@ -316,20 +316,20 @@ class ExactMatch(params: EmParams) extends Module {
   val now = if (agingOn) RegInit(0.U(l.ageW1.W)) else WireDefault(0.U(1.W))
   if (agingOn) {
     val tick = RegInit(0.U(32.W))
-    when(tick === (params.aging.get.tickDiv - 1).U) { tick := 0.U; now := now + 1.U }
-    .otherwise { tick := tick + 1.U }
+    when(tick === (params.aging.get.tickDiv - 1).U) {
+      tick := 0.U;
+      now := now + 1.U
+    }
+    .otherwise {
+      tick := tick + 1.U
+    }
   }
   def expired(ts: UInt): Bool =
     if (agingOn) (now - ts) >= timeout.U(l.ageW1.W) else false.B
 
   // =========================================================================
-  // 空闲栈 / 转发 CAM
+  // 转发 CAM（KT/AD 的空闲池 memory/Bitmap 在 SvcEngine 内部，见那里）
   // =========================================================================
-  val ktFree: Option[FreeList] = if (useKt) Some(Module(new FreeList(l.ktDepthReal))) else None
-  val adFree: Option[FreeList] = if (useAd) Some(Module(new FreeList(params.adDepth))) else None
-  ktFree.foreach { f => f.io.alloc := false.B; f.io.free := false.B; f.io.faddr := 0.U }
-  adFree.foreach { f => f.io.alloc := false.B; f.io.free := false.B; f.io.faddr := 0.U }
-
   val fwd = if (learnOn) Some(Module(new ForwardCam(fwdD, keyW, adW))) else None
 
   // =========================================================================
@@ -479,7 +479,8 @@ class ExactMatch(params: EmParams) extends Module {
   //
   // 引擎拥有"维护 / 自学习插入 / 老化动作"的状态机与决策；**存储实例与读写地址 mux 留在
   // 这里**：引擎给出"svc 侧"的读写请求，下面用 svcOwns 与查找流水线二选一。
-  // AgeTable / OVFC / FreeList / AgeSched 的写口与释放口由引擎直接驱动。
+  // AgeTable / OVFC 的写口与释放口由引擎直接驱动（实例在顶层）；
+  // KT/AD 空闲池（memory/Bitmap）整个在引擎里，这里只读 cnt。
   // 计数与 entryCnt 留在顶层，引擎只给单拍脉冲（insDone/insFail/...）。
   // =========================================================================
   val eng = Module(new SvcEngine(l, params))
@@ -512,10 +513,6 @@ class ExactMatch(params: EmParams) extends Module {
   eng.io.htQEnt  := ageTab.io.qEnt
   eng.io.htUErr  := htUErrC
   eng.io.ktUErr  := ktUErrC
-  eng.io.ktOk    := ktFree.map(_.io.ok).getOrElse(true.B)
-  eng.io.ktAddr  := ktFree.map(_.io.addr).getOrElse(0.U)
-  eng.io.adOk    := adFree.map(_.io.ok).getOrElse(true.B)
-  eng.io.adAddr  := adFree.map(_.io.addr).getOrElse(0.U)
   eng.io.invBusy := invBusy
   eng.io.invBk   := invBk
   eng.io.invIdx  := invIdx
@@ -566,10 +563,6 @@ class ExactMatch(params: EmParams) extends Module {
   ovf.io.freeEn    := eng.io.ovFreeEn
   ovf.io.freeSel   := eng.io.ovFreeSel
   ovf.io.svPaySel  := eng.io.ovSvPaySel
-
-  // ---- FreeList 分配 / 释放 ----
-  ktFree.foreach { f => f.io.alloc := eng.io.ktAlloc; f.io.free := eng.io.ktFreeEn; f.io.faddr := eng.io.ktFreeAddr }
-  adFree.foreach { f => f.io.alloc := eng.io.adAlloc; f.io.free := eng.io.adFreeEn; f.io.faddr := eng.io.adFreeAddr }
 
   // ---- 老化 pending 目标的释放（放掉后扫描器才能 claim 下一个）----
   agSched.io.release := eng.io.agRelease
@@ -905,8 +898,8 @@ class ExactMatch(params: EmParams) extends Module {
   io.status.fpClash   := cntFpClash
   io.status.ovfcUse   := ovf.io.count
   io.status.fwdUse    := (if (learnOn) fwd.get.io.count else 0.U(fwdCntW.W))
-  io.status.ktFree    := ktFree.map(f => f.io.count.asUInt).getOrElse(0.U)
-  io.status.adFree    := adFree.map(f => f.io.count.asUInt).getOrElse(0.U)
+  io.status.ktFree    := eng.io.ktCount
+  io.status.adFree    := eng.io.adCount
   io.status.lkBusy    := acqV || r1V || d1V
   io.status.uerrCnt   := cntUErr
   // 作废还没清完时 svc 也算忙（否则上层以为空闲、下发命令又被上面 ready 挡住，来回试探）。

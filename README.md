@@ -5,12 +5,16 @@
 
 ## 环境
 
-- sbt 1.9+（Scala 2.13.12 / Chisel 5.3.0，`org.chipsalliance`）
+- sbt 1.9+（Scala 2.13.16 / Chisel 7.15.0，`org.chipsalliance`）
 - 仿真：`chisel3.simulator`（Verilator 后端，随 Chisel 提供，不再依赖已停止维护的 chiseltest）
-- **firtool 必须在 `$PATH` 上**（Chisel 5 只从 PATH 查找，不内置下载）。注意 1.62.0 在
-  `FPP/Parser` 上会崩（见下）；已知可用的较新版本为 1.159.0。
+- **firtool 无需手动安装**：chisel 7.15.0 钉 firtool 1.158.0，firtool-resolver 会自动下载并缓存；
+  要用自带版本就设 `CHISEL_FIRTOOL_PATH` 指向包含 firtool 的目录（PATH 上版本不匹配的旧 firtool
+  会被 chisel 忽略，但**不要**在自己的脚本里手动调它——1.62.0 解析不了 chisel7 的 CHIRRTL）。
 - **TestCase 注意**：`chisel3.simulator` 不像旧的 treadle 后端那样在 t=0 就给出 `RegInit` 值，
   依赖复位初值的用例必须先调 `BaseCbb.SimReset(dut)`（见 `src/test/scala/BaseCbb/SimReset.scala`）。
+- **随机化语义**：chisel 7 的 ChiselSim 默认把未初始化寄存器/存储上电为**随机值**；
+  本仓库统一用 `BaseCbb.Sim.simulate`（= `EphemeralSimulator` + `Randomization.uninitialized`）
+  保持 chisel5 的"未复位为 0"语义，见 `src/test/scala/BaseCbb/Sim.scala`。
 
 ## 快速上手
 
@@ -54,7 +58,8 @@ sbt "runMain HBS.swf.SwfMain"   # HBS 顶层 SwfCore 的 Verilog 生成（需大
 ### Demo — 「参数→IR→JSON」演示（`src/main/scala/Demo/`）
 
 `GenParam` + `GenMemory`/`GenIR`/`GenDataStructure` 的活样例：`sbt "runMain Demo.Main"` 生成
-`generated/DemoIR.json`。`TestSram` 演示 `DescribedSRAM`（带描述信息的 SRAM + annotation 记录）。
+`generated/DemoIR.json`。`TestSram` 演示 `DescribedSRAM`（带描述信息的 SRAM，
+描述在 elaboration 期打印；chisel 7 移除了 FIRRTL 注解机制，原 annotation 记录方式随之删除）。
 
 ### Perf — 性能模型（`src/main/scala/Perf/`，纯 Scala，无 Chisel）
 

@@ -1,20 +1,22 @@
 package em
 
-import _root_.circt.stage.ChiselStage
+import _root_.circt.stage.{ChiselStage, FirtoolOption}
 import chisel3.stage.ChiselGeneratorAnnotation
-import java.io.PrintWriter
-import scala.sys.process._
 
 // ===========================================================================
 // EM 模块的 Verilog 产出入口
 //
-//   sbt "em/runMain em.EmGen <outDir> <preset>"
+//   sbt "runMain em.EmGen <outDir> <preset>"
 //
-// 流程（chisel 5）：ChiselStage 发射 CHIRRTL（.fir）→ firtool --verilog 出纯 Verilog。
-// firtool 从 PATH 或 firtool-resolver 缓存里取。
+// 流程（chisel 7）：ChiselStage 发射 CHIRRTL（.fir，可读中间表示）→ ChiselStage 走
+// circt 流水线出 SystemVerilog。firtool 版本由 chisel 钉死（7.15.0 ↔ firtool 1.158.0），
+// 经 firtool-resolver 自动下载并缓存（~/.cache/circt 或 ~/Library/Caches/...）；
+// 要用自带版本就设环境变量 CHISEL_FIRTOOL_PATH 指向包含 firtool 的目录。
+// ⚠️ PATH 上的旧 firtool（如 1.62.0）解析不了 chisel7 的 CHIRRTL（新 layer 语法），
+//    所以这里**不再手动调 PATH firtool**，一律走 chisel 的自动解析。
 //
 // ⚠️ 产出的 Verilog 用 **Verilator** 仿真（`verilator --binary --timing --trace ...`）。
-//   **iverilog 编不过**：AgeTable / FreeList 这类寄存器阵列被 firtool 展成"连续赋值里对
+//   **iverilog 编不过**：AgeTable 这类寄存器阵列（Vec）被 firtool 展成"连续赋值里对
 //   数组做变量下标读"，iverilog 要求那里必须是常量下标（实测 11 个 elaboration error）。
 //   firtool 的 `disallowLocalVariables` 仍然要带：否则函数内变量生成 `automatic`，
 //   iverilog/部分工具链会报 unsupported。
@@ -57,13 +59,6 @@ object EmGen {
     case other => sys.error(s"未知 preset: ${other}（可选：basic / 2left / inline / noad / crcrt / tb）")
   }
 
-  /** firtool 可执行文件：PATH 优先，其次 firtool-resolver 的缓存位置 */
-  private def firtoolBin: String = {
-    val which = Seq("bash", "-c", "command -v firtool").!!.trim
-    if (which.nonEmpty) which
-    else s"${sys.env("HOME")}/Library/Caches/org.chipsalliance.llvm-firtool/1.62.0/bin/firtool"
-  }
-
   def main(args: Array[String]): Unit = {
     val outDir = if (args.length > 0) args(0) else "out/a3"
     val name   = if (args.length > 1) args(1) else "basic"
@@ -86,21 +81,21 @@ object EmGen {
       s"CheckIn=${p.memCheckIn} CheckOut=${p.memCheckOut}）")
 
     val dir = s"$outDir/$name"
-    // 1) CHIRRTL
+    // 1) CHIRRTL（供人工审查 / 第三方工具链）
     (new ChiselStage).execute(
       Array("--target-dir", dir, "--target", "chirrtl"),
       Seq(ChiselGeneratorAnnotation(() => new ExactMatch(p))))
-    // 2) firtool → Verilog
+    // 2) firtool → SystemVerilog（单文件 ExactMatch.sv；firtool 由 chisel 自动解析到 1.158.0）
     // disallowLocalVariables：不要把函数内变量生成为 `automatic` —— iverilog 对
     // "Overriding the default variable lifetime" 视为 unsupported（sorry），
     // 会以非零码退出、**不产出 vvp**。
-    val fir  = s"$dir/ExactMatch.fir"
-    val veri = s"$dir/ExactMatch.v"
-    val cmd = Seq(firtoolBin, fir, "--verilog", "-o", veri,
-      "--disable-all-randomization", "--strip-debug-info",
-      "--lowering-options=disallowLocalVariables")
-    val log = cmd.!!
-    if (log.trim.nonEmpty) println(log)
+    (new ChiselStage).execute(
+      Array("--target-dir", dir, "--target", "systemverilog"),
+      Seq(ChiselGeneratorAnnotation(() => new ExactMatch(p)),
+          FirtoolOption("--disable-all-randomization"),
+          FirtoolOption("--strip-debug-info"),
+          FirtoolOption("--lowering-options=disallowLocalVariables")))
+    val veri = s"$dir/ExactMatch.sv"
     if (!new java.io.File(veri).exists()) sys.error(s"firtool 未产出 $veri")
     println(s"[em] 产出：$veri")
   }

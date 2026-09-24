@@ -2,7 +2,7 @@ package HBS.swf
 
 import HBS.swf.common.SwfParams
 import HBS.swf.sfu_routing.SfuRouting
-import chisel3.simulator.EphemeralSimulator._
+import BaseCbb.Sim._
 import chisel3._
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers

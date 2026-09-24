@@ -4,10 +4,11 @@
 
 ```bash
 sbt "testOnly em.EmWaveSpec"        # 跑 P1..P7 场景 + dump 波形 + 打印各阶段观测值
-surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd
+surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.fst
 ```
 
-波形落在 `out/em_wave/workdir-verilator/trace.vcd`（`out/` 在 .gitignore 内）。
+波形落在 `out/em_wave/workdir-verilator/trace.fst`（**FST 格式**，chisel 7 起 svsim 支持；
+同场景 VCD ~351KB vs FST ~41KB，surfer/GTKWave 都能直接读。`out/` 在 .gitignore 内）。
 场景、断言、每个阶段的观测值都打印在测试日志里，没查看器也能读。
 
 ## 文件
@@ -39,24 +40,22 @@ surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd
 
 | 位置 | 作用 |
 |------|------|
-| 编译期 `Backend.CompilationSettings(traceStyle = Some(TraceStyle.Vcd()))` | 给 Verilator 加 `--trace` 并定义 `SVSIM_ENABLE_VCD_TRACING` |
-| 运行期 `controller.setTraceEnabled(true)` | 触发 DPI 回调里的 `$dumpfile` / `$dumpvars` |
+| 编译期 `TraceStyle(kind = TraceKind.Fst())` | 给 Verilator 加 `--trace-fst` 并定义 `SVSIM_ENABLE_FST_TRACING` |
+| 运行期 `dut.controller.setTraceEnabled(true)` | 触发 DPI 回调里的 `$dumpfile` / `$dumpvars` |
 
 只做前一步 → 编出带 trace 的模型但一个字节都不落盘；只做后一步 → `$dumpvars` 被 `ifdef` 掉。
-不想出波形就把 `traceStyle` 去掉 —— Verilator 不加 `--trace` 时 `$dumpfile/$dumpvars` 被直接忽略
+不想出波形就把 `traceStyle` 去掉 —— Verilator 不加 `--trace-fst` 时 `$dumpfile/$dumpvars` 被直接忽略
 （0 报错、不落文件，仿真明显更快）。
 
 dump 哪些信号由 svsim 生成的 `testbench.sv` 决定（`$dumpvars(0, dut)`，即 DUT 全层次
 1100+ 个信号），Scala 侧改不了。
 
-## ⚠️ 两个已知代价
+## ⚠️ 已知代价
 
-1. **只能出 VCD，没有 FST。** svsim 的 Verilator 后端只提供 `TraceStyle.Vcd`，
-   所以拿不到 FST 的体积优势（同场景 VCD ~306KB vs FST ~28KB）。
-2. **不能对波形做"输入与时钟沿同拍"类的自动检查。** svsim 通过 DPI poke 输入，
-   Verilator trace 给这些信号的时间戳是 eval 序号而非真实仿真时间，poke 的落点相对
-   时钟采样沿会偏移（实测：55 个请求在波形上按同拍判据只能数出 49 个，输出的响应拍
-   数也会差 2）。**看波形不受影响**（脉冲与响应都在、顺序也对），只是别用同拍判据去数。
+**不能对波形做"输入与时钟沿同拍"类的自动检查。** svsim 通过 DPI poke 输入，
+Verilator trace 给这些信号的时间戳是 eval 序号而非真实仿真时间，poke 的落点相对
+时钟采样沿会偏移（实测：55 个请求在波形上按同拍判据只能数出 49 个，输出的响应拍
+数也会差 2）。**看波形不受影响**（脉冲与响应都在、顺序也对），只是别用同拍判据去数。
 
    响应平衡的检查因此放在 Scala 断言里：`EmTestSupport.tick()` 每拍回调一次 `onCycle`，
    `EmWaveSpec` 用它统计"握手拍数 == 响应拍数"（`peek` 拿的是仿真器的真实值）。
@@ -65,8 +64,8 @@ dump 哪些信号由 svsim 生成的 `testbench.sv` 决定（`$dumpvars(0, dut)`
 ## 打开波形
 
 ```bash
-surfer out/em_wave/workdir-verilator/trace.vcd               # 直接打开
-surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd   # 带预设视图
+surfer out/em_wave/workdir-verilator/trace.fst               # 直接打开
+surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.fst   # 带预设视图
 ```
 
 `em_wave.sucl` 已分好组（时钟握手 / 查找流水线 / svc引擎 / 计数与状态）并 `zoom_fit`。
@@ -77,16 +76,16 @@ surfer -c tools/em_tb/em_wave.sucl out/em_wave/workdir-verilator/trace.vcd   # �
 
 ## 查看器
 
-VCD 是通用格式，换查看器不用重新仿真：
+FST 是通用格式（GTKWave 系），换查看器不用重新仿真；需要 VCD 时用 `fst2vcd` 反向转换：
 
 | 查看器 | 装法 | 说明 |
 |---|---|---|
-| **Surfer** | `brew install surfer` | 原生 arm64；同一套代码也有 VS Code 扩展与浏览器版 |
+| **Surfer** | `brew install surfer` | 原生 arm64；读 FST / VCD，同一套代码也有 VS Code 扩展与浏览器版 |
 | VaporView | VS Code 扩展 `lramseyer.vaporview` | 免费开源，读 VCD / FST / GHW |
-| WaveTrace | VS Code 扩展 `wavetrace.wavetrace` | 免费限 8 个信号，**只读 VCD** |
+| WaveTrace | VS Code 扩展 `wavetrace.wavetrace` | 免费限 8 个信号，**只读 VCD**（需先 `fst2vcd` 转换） |
 | GTKWave | ⚠️ macOS 的 Homebrew cask 已停用（上游 discontinued） | 要走社区 tap 或源码编 GTKWave 4 |
 
 ## 注：为什么不用 iverilog
 
-`AgeTable` / `FreeList` 被 firtool 展成"连续赋值里对数组做变量下标读"，iverilog 要求常量
+`AgeTable` 这类寄存器阵列（Vec）被 firtool 展成"连续赋值里对数组做变量下标读"，iverilog 要求常量
 下标，编不过。仿真与波形都走 Verilator。

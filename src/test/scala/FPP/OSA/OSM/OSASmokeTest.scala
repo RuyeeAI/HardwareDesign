@@ -1,7 +1,7 @@
 package FPP.OSA.OSM
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
+import BaseCbb.Sim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 /**

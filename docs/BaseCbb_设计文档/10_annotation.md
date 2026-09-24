@@ -1,4 +1,9 @@
-# annotation/ — 后端注解工具
+# annotation/ — 后端注解工具（**已删除**）
+
+> ⚠️ chisel 7 移除了 FIRRTL 注解机制（`chisel3.experimental.ChiselAnnotation` 与
+> `firrtl.annotations` 随 SFC 一起退出），本目录（`Annotations.scala`）随之删除。
+> 原 `SRAMAnnotation` 的唯一消费者 `DescribedSRAM` 改为在 elaboration 期打印描述信息；
+> 需要机器可读的 SRAM 清单时，从 firtool 的 `.anno.json` / firrtl 产物侧解决。以下为历史记录。
 
 > 路径：`src/main/scala/BaseCbb/annotation/Annotations.scala`（73 行）　包：`BaseCbb.annotation`（SiFive 风格移植）
 

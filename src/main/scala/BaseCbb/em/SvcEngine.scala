@@ -2,6 +2,7 @@ package em
 
 import chisel3._
 import chisel3.util._
+import BaseCbb.memory.Bitmap
 
 // ===========================================================================
 // svc 共享访问引擎 —— 维护口 / 自学习插入 / 老化动作的状态机
@@ -10,7 +11,9 @@ import chisel3.util._
 // 与读写地址 mux 留在 ExactMatch**：
 //   · 引擎只输出「svc 侧」的读写请求（htRe/htRaddr、ktRe/ktRaddr、写口），
 //     顶层用 `Mux(svcOwns, eng.*, 流水线)` 接进存储；
-//   · AgeTable / OVFC / FreeList / AgeSched 的写口与释放口由引擎直接驱动；
+//   · AgeTable / OVFC 的写口与释放口由引擎直接驱动（实例在顶层）；
+//   · **KT/AD 空闲池（memory/Bitmap）整个在引擎里**——分配/归还的时机完全由状态机决定，
+//     放顶层只会多出 8 个"过一手"的端口，顶层只读 cnt；
 //   · 计数与 entryCnt 留在顶层，引擎只给单拍脉冲（insDone/insFail/...）。
 //
 // 优先级：老化动作 > wr > 自学习插入。
@@ -86,10 +89,6 @@ class SvcEngine(l: EmLayout, params: EmParams) extends Module {
     val htUErr  = Input(Bool())
     val ktUErr  = Input(Bool())
 
-    // ---- FreeList ----
-    val ktOk   = Input(Bool()); val ktAddr = Input(UInt(l.ktPtrW.W))
-    val adOk   = Input(Bool()); val adAddr = Input(UInt(l.adPtrW.W))
-
     // ---- UE 自愈（寄存器与掩码留在顶层）----
     val invBusy = Input(Bool())
     val invBk   = Input(UInt(l.bankW.W))
@@ -125,10 +124,9 @@ class SvcEngine(l: EmLayout, params: EmParams) extends Module {
     val ovSvPaySel = Output(UInt(selW.W))
     val ovMatchKey = Output(UInt(keyW.W))
 
-    // ==== 输出：FreeList ====
-    val ktAlloc = Output(Bool()); val adAlloc = Output(Bool())
-    val ktFreeEn = Output(Bool()); val ktFreeAddr = Output(UInt(l.ktPtrW.W))
-    val adFreeEn = Output(Bool()); val adFreeAddr = Output(UInt(l.adPtrW.W))
+    // ==== 输出：空闲池占用数（Bitmap 实例在引擎内，顶层 status 只读 cnt）====
+    val ktCount = Output(UInt(math.max(1, log2Ceil(l.ktDepthReal + 1)).W))
+    val adCount = Output(UInt(math.max(1, log2Ceil(params.adDepth + 1)).W))
 
     // ==== 输出：AgeSched 释放 ====
     val agRelease = Output(Bool())
@@ -149,6 +147,18 @@ class SvcEngine(l: EmLayout, params: EmParams) extends Module {
     val lrnPop    = Output(Bool())
     val invGo     = Output(Bool())
   })
+
+  // =========================================================================
+  // 空闲条目池（Bitmap ×2：KT / AD）—— 复用 memory/Bitmap（原 em/FreeList 与其
+  // 功能重复，已删除：同为"1=可用、最低位优先分配、alloc 清 0 / free 置 1"的位图）
+  //
+  // 为什么放在引擎里：分配（S_ALLOC）与归还（S_FREE/S_AGFR）的时机完全由本状态机决定，
+  // 放在顶层只会多出 8 个"过一手"的端口；顶层只读 cnt 聚合进 status。
+  // ⚠️ 同拍 alloc+ret：Bitmap 是"分配清 0 生效"（clr 后写），EM 里二者分属 S_ALLOC 与
+  //    S_FREE/S_AGFR，状态互斥，不可能同拍同址 —— 行为与旧 FreeList（归还优先）等价。
+  // =========================================================================
+  val ktFree: Option[Bitmap] = if (useKt) Some(Module(new Bitmap(l.ktDepthReal))) else None
+  val adFree: Option[Bitmap] = if (useAd) Some(Module(new Bitmap(params.adDepth))) else None
 
   // =========================================================================
   // svc 寄存器
@@ -425,14 +435,16 @@ class SvcEngine(l: EmLayout, params: EmParams) extends Module {
     }
   }
 
-  // ---- d-left 选路 + FreeList 分配 ----
+  // ---- d-left 选路 + 空闲池（Bitmap）分配 ----
   // 插入规则：候选槽位里已有同指纹条目（sFpHit）时，整个 HT 都不能放这条 key，
   // 否则后续查找会撞上别人的指纹 → 直接落 OVFC（OVFC 用全 key 比较，精确）。
   val allocWill = Wire(Bool())
   allocWill := false.B
-  /** S_ALLOC 真的能分配下去：HT 或 OVFC 有位，且 KT/AD 有空闲。 */
+  /** S_ALLOC 真的能分配下去：HT 或 OVFC 有位，且 KT/AD 有空闲。
+    * ⚠️ 语义映射：Bitmap 的 `full = 无可用位`（`empty = 池空即全可用`），"有空闲" = `!full`。 */
   private val sAllocOk: Bool =
-    allocWill && io.ktOk && io.adOk
+    allocWill && ktFree.map(f => !f.io.full).getOrElse(true.B) &&
+      adFree.map(f => !f.io.full).getOrElse(true.B)
   when(sState === S_ALLOC) {
     val fpClash = sFpHit
 
@@ -478,15 +490,17 @@ class SvcEngine(l: EmLayout, params: EmParams) extends Module {
     allocWill := htFree || io.ovHasFree
 
     when(sAllocOk) {
-      if (useKt) { sKtPtr := io.ktAddr }
-      if (useAd) { sAdPtr := io.adAddr }
+      ktFree.foreach(f => sKtPtr := f.io.req_ptr)
+      adFree.foreach(f => sAdPtr := f.io.req_ptr)
       sState := S_WR
     }.otherwise {
       sState := S_IDLE
     }
   }
-  io.ktAlloc := (sState === S_ALLOC) && allocWill
-  io.adAlloc := (sState === S_ALLOC) && allocWill
+  // ⚠️ 分配要带 !full 门控（与旧 FreeList 的 alloc && okNow 等价）：Bitmap 满时若仍拉
+  //    req_vld，会去清 req_ptr(=0) 那一位 —— 已分配的资源被误标成可用，后续重复分配。
+  ktFree.foreach(f => f.io.req_vld := (sState === S_ALLOC) && allocWill && !f.io.full)
+  adFree.foreach(f => f.io.req_vld := (sState === S_ALLOC) && allocWill && !f.io.full)
 
   // =========================================================================
   // svc 写口
@@ -548,10 +562,8 @@ class SvcEngine(l: EmLayout, params: EmParams) extends Module {
       Mux(agFr, agAdRel, sAdPtr)
     }
 
-  io.ktFreeEn   := relEn
-  io.ktFreeAddr := ktRelPtr
-  io.adFreeEn   := relEn
-  io.adFreeAddr := adRelPtr
+  ktFree.foreach { f => f.io.ret_vld := relEn; f.io.ret_ptr := ktRelPtr }
+  adFree.foreach { f => f.io.ret_vld := relEn; f.io.ret_ptr := adRelPtr }
 
   // clr 的三类来源：删除/老化完成、svc 遇 UE 放弃（顺带作废）、UE 自愈作废
   // ⚠️ 优先级：clr 高于 clm/ins（AgeTable 内部实现），作废与 claim 都走这一支。
@@ -610,4 +622,8 @@ class SvcEngine(l: EmLayout, params: EmParams) extends Module {
   io.busy   := sState =/= S_IDLE
   io.ueFire := sState === S_MEMERR
   io.ueSrc  := sUeSrc
+
+  // 空闲池可用数（未启用 KT/AD 的那一路恒 0；顶层 status 直读）
+  io.ktCount := ktFree.map(_.io.cnt).getOrElse(0.U(math.max(1, log2Ceil(l.ktDepthReal + 1)).W))
+  io.adCount := adFree.map(_.io.cnt).getOrElse(0.U(math.max(1, log2Ceil(params.adDepth + 1)).W))
 }

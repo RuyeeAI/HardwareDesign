@@ -1,7 +1,7 @@
 package BaseCbb.RegCbb
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
+import BaseCbb.Sim._
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 import BaseCbb.RegCbb.demo.UartAxiDemo

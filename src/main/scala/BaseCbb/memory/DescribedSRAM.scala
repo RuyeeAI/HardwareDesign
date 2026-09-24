@@ -5,13 +5,14 @@ package BaseCbb.memory
 
 import chisel3.{Data, SyncReadMem, Vec}
 import chisel3.util.log2Ceil
-import BaseCbb.annotation.Annotated
 
-/** 带描述信息的 SRAM：创建 `SyncReadMem` 并通过 `BaseCbb.annotation.SRAMAnnotation`
-  * 把名字 / 位宽 / 深度 / 描述 / 写掩码粒度记录进 annotation（供后端与文档生成使用）。
+/** 带描述信息的 SRAM：创建 `SyncReadMem`，并把名字 / 位宽 / 深度 / 描述 / 写掩码粒度
+  * 在 elaboration 期打印出来（供日志与文档生成使用）。
   *
-  * 由 hardware-design `BaseCbb/memory/DescribedSRAM.scala` 迁入，仅把
-  * `BaseCbb.utils.Annotated`（HBS 时期路径）改为 HD 的 `BaseCbb.annotation.Annotated`。
+  * 由 hardware-design `BaseCbb/memory/DescribedSRAM.scala` 迁入。
+  * ⚠️ chisel 7 移除了 FIRRTL 注解机制（`chisel3.experimental.ChiselAnnotation` 与
+  * `firrtl.annotations`），原通过 `BaseCbb.annotation.SRAMAnnotation` 落到 .anno.json 的
+  * 记录方式不复存在，改为 elaboration 期打印；`BaseCbb/annotation/` 整包随之删除。
   */
 object DescribedSRAM {
   def apply[T <: Data](
@@ -30,14 +31,9 @@ object DescribedSRAM {
       case d         => d.getWidth
     }
 
-    Annotated.srams(
-      component = mem,
-      name = name,
-      address_width = log2Ceil(size),
-      data_width = data.getWidth,
-      depth = size,
-      description = desc,
-      write_mask_granularity = granWidth
+    println(
+      f"[DescribedSRAM] name=$name desc=$desc addrW=${log2Ceil(size)} " +
+        f"dataW=${data.getWidth} depth=$size writeMaskGran=$granWidth"
     )
 
     mem

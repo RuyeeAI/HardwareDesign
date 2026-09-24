@@ -31,7 +31,7 @@ import BaseCbb.memory.MemoryProtectType.MemoryProtectType
 //      查找时组合读出。时间戳另放一块**独立 SRAM**（自己的读写端口）——老化扫描读它
 //      **不占 HT/KT/AD 的访存带宽**，所以 II=1 仍然成立，同时省掉逐条 ts 的寄存器开销
 //      （见 EmLayout.ageRegW / ageTsDepth 的说明）。
-//   2. KT 是**单实例**存储 + 全局 FreeList：每次查找只读 1 路，不需要按 (bank,way) 分 bank
+//   2. KT 是**单实例**存储 + 全局空闲池（memory/Bitmap）：每次查找只读 1 路，不需要按 (bank,way) 分 bank
 //      并行读，因此指针回到全局 ktDepth 空间、容量全局共享。
 //   3. AD 从 SP 改为 TP：维护写 AD 与流水线读 AD 不再互斥。
 //      同理 HT/KT 都是 TP（同拍 1 读 + 1 写），因此**只有读需要时隙**。
@@ -200,7 +200,7 @@ final case class EmLayout(p: EmParams) {
 
   // ---- KT：单实例存储，全局指针空间 ----
   // 因为每次查找只需读"指纹命中的那一路"（插入时保证桶内指纹不撞车，见 §插入规则），
-  // 不再需要按 (bank,way) 分 bank 并行读，KT 回到单实例 + 全局 FreeList。
+  // 不再需要按 (bank,way) 分 bank 并行读，KT 回到单实例 + 全局空闲池（memory/Bitmap）。
   val ktDepthReal = p.ktDepth
   val ktPtrW      = math.max(1, log2Ceil(ktDepthReal))
 
